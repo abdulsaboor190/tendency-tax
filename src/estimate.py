@@ -18,8 +18,10 @@ Estimands:
   delta_pass = -(b2 + b3)
 """
 
+import dataclasses
 from typing import Any, NamedTuple
 
+import dataclasses
 import joblib
 import numpy as np
 import pandas as pd
@@ -606,6 +608,148 @@ def run_pipeline() -> dict[str, Any]:
     )
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Verdict function (D4.1) — pure function, no file or data access
+# ---------------------------------------------------------------------------
+
+BANNED_WORDS = frozenset({"causes", "cause", "proves", "prove", "optimal", "causal"})
+
+
+@dataclasses.dataclass(frozen=True)
+class VerdictResult:
+    """Frozen result of the confirmatory verdict evaluation."""
+
+    state: str  # "supported" or "not supported / inconclusive"
+    conditions: dict[str, bool]
+    failed: list[str]
+    direction: str  # "positive", "negative", or "zero"
+    sentence: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a plain dict representation."""
+        return dataclasses.asdict(self)
+
+
+def verdict(
+    holdout_delta: float,
+    holdout_ci_lo: float,
+    holdout_ci_hi: float,
+    early_delta: float,
+    placebo_lo: float,
+    placebo_hi: float,
+) -> VerdictResult:
+    """Evaluate the confirmatory verdict for the tendency-tax hypothesis.
+
+    This is a pure function with no file or data access. It must be committed
+    BEFORE any holdout result exists so the decision rule cannot be bent.
+
+    Parameters
+    ----------
+    holdout_delta : float
+        Point estimate of delta from the holdout split.
+    holdout_ci_lo : float
+        Lower bound of the 95% CI for holdout delta.
+    holdout_ci_hi : float
+        Upper bound of the 95% CI for holdout delta.
+    early_delta : float
+        Point estimate of delta from the early split (reference sign).
+    placebo_lo : float
+        2.5th percentile of the early-split placebo null distribution.
+    placebo_hi : float
+        97.5th percentile of the early-split placebo null distribution.
+
+    Returns
+    -------
+    VerdictResult
+        Frozen dataclass with state, conditions, failed list, direction, sentence.
+    """
+    # C1: 95% CI excludes zero
+    c1 = holdout_ci_lo > 0.0 or holdout_ci_hi < 0.0
+
+    # C2: Sign matches early (both exactly 0 → False)
+    def _sign(x: float) -> int:
+        if x > 0:
+            return 1
+        if x < 0:
+            return -1
+        return 0
+
+    s_holdout = _sign(holdout_delta)
+    s_early = _sign(early_delta)
+    c2 = (s_holdout != 0) and (s_early != 0) and (s_holdout == s_early)
+
+    # C3: Holdout delta outside placebo range (strict inequalities)
+    c3 = holdout_delta < placebo_lo or holdout_delta > placebo_hi
+
+    conditions: dict[str, bool] = {
+        "c1_ci_excludes_zero": c1,
+        "c2_sign_matches_early": c2,
+        "c3_outside_placebo": c3,
+    }
+
+    supported = c1 and c2 and c3
+    state = "supported" if supported else "not supported / inconclusive"
+
+    failed = [name for name, val in conditions.items() if not val]
+
+    # Direction
+    if holdout_delta > 0.0:
+        direction = "positive"
+    elif holdout_delta < 0.0:
+        direction = "negative"
+    else:
+        direction = "zero"
+
+    # Build sentence (association-only language)
+    if supported:
+        if direction == "positive":
+            sentence = (
+                "All three pre-specified conditions were satisfied: plays against "
+                "the situational expectation are associated with higher EPA, "
+                "consistent with a cost of predictability."
+            )
+        elif direction == "negative":
+            sentence = (
+                "All three pre-specified conditions were satisfied: plays in line "
+                "with the situational expectation are associated with higher EPA, "
+                "suggesting no positive association with unpredictability."
+            )
+        else:
+            sentence = (
+                "All three pre-specified conditions were satisfied, though the "
+                "point estimate is exactly zero; interpret with caution."
+            )
+    else:
+        # Build plain-language description of which conditions failed
+        failed_descriptions = []
+        if not c1:
+            failed_descriptions.append(
+                "the 95% confidence interval includes zero"
+            )
+        if not c2:
+            failed_descriptions.append(
+                "the holdout estimate sign does not match the early-split estimate"
+            )
+        if not c3:
+            failed_descriptions.append(
+                "the holdout estimate falls within the placebo null range"
+            )
+
+        failed_str = "; ".join(failed_descriptions)
+        sentence = (
+            f"We found no reliable evidence for the tendency-tax hypothesis: "
+            f"{failed_str}."
+        )
+
+    return VerdictResult(
+        state=state,
+        conditions=conditions,
+        failed=failed,
+        direction=direction,
+        sentence=sentence,
+    )
 
 
 if __name__ == "__main__":
