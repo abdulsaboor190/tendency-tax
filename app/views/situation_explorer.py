@@ -1,4 +1,9 @@
-"""Situation Explorer view: 27-cell grid of situational tendencies (Deliverable D8.1).
+"""Situation Explorer view: 27-cell grid of situational tendencies (Phase 8).
+
+Deliverables:
+  - D8.1: Situational controls with query parameter sync
+  - D8.2: Cell result panel with stored verdict, uncertainty intervals,
+    and cross-split comparison
 
 Controls:
   - Down (1, 2, 3)
@@ -6,12 +11,12 @@ Controls:
   - Field zone (red zone <=20, midfield 21–79, backed up >=80)
   - Split selector (early, tune, holdout, all)
 
-Syncs state bidirectionally with Streamlit query parameters.
 Default split is 'tune' as pre-registered in PLAN.md (Decision 3).
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pandas as pd
@@ -25,9 +30,15 @@ from app.data import (
     get_results_bundle,
     set_query_param,
 )
-from app.ui.components import caveat_callout, empty_state
+from app.ui.components import (
+    caveat_callout,
+    empty_state,
+    interval_plot,
+    metric_card,
+    verdict_chip,
+)
 from app.ui.layout import render_page_footer, render_page_header
-from app.ui.theme import inject_css
+from app.ui.theme import VERDICT_TOKENS, inject_css
 
 # ---------------------------------------------------------------------------
 # Control Options and Defaults
@@ -77,7 +88,6 @@ def parse_explorer_state() -> dict[str, Any]:
     dict[str, Any]
         Dictionary with keys 'down' (int), 'dist' (str), 'zone' (str), 'split' (str).
     """
-    # Down
     raw_down = get_query_param("down")
     try:
         parsed_down = int(raw_down) if raw_down is not None else DEFAULT_DOWN
@@ -85,15 +95,12 @@ def parse_explorer_state() -> dict[str, Any]:
     except (ValueError, TypeError):
         down_val = DEFAULT_DOWN
 
-    # Distance bucket
     raw_dist = str(get_query_param("dist", "")).lower()
     dist_val = raw_dist if raw_dist in VALID_DISTS else DEFAULT_DIST
 
-    # Field zone
     raw_zone = str(get_query_param("zone", "")).lower()
     zone_val = raw_zone if raw_zone in VALID_ZONES else DEFAULT_ZONE
 
-    # Split
     raw_split = str(get_query_param("split", "")).lower()
     split_val = raw_split if raw_split in VALID_SPLITS else DEFAULT_SPLIT
 
@@ -137,12 +144,50 @@ def lookup_cell_record(
     return sub.iloc[0].to_dict()
 
 
+def build_cell_split_rows(
+    cells_df: pd.DataFrame,
+    cell_id: str,
+) -> list[dict[str, Any]]:
+    """Build cross-split comparison rows for a cell in standard order."""
+    cell_rows = cells_df[cells_df["cell_id"] == cell_id]
+    split_order = ["early", "tune", "holdout", "all"]
+    rows = []
+    for s in split_order:
+        sub = cell_rows[cell_rows["split"] == s]
+        if sub.empty:
+            continue
+        rec = sub.iloc[0].to_dict()
+        delta = rec.get("delta")
+        ci_lo = rec.get("ci_lo")
+        ci_hi = rec.get("ci_hi")
+        d_val = None if (delta is None or math.isnan(delta)) else float(delta)
+        lo_val = None if (ci_lo is None or math.isnan(ci_lo)) else float(ci_lo)
+        hi_val = None if (ci_hi is None or math.isnan(ci_hi)) else float(ci_hi)
+
+        verdict = rec.get("verdict", "cant_tell")
+        if verdict not in VERDICT_TOKENS:
+            verdict = "cant_tell"
+
+        rows.append(
+            {
+                "split": s,
+                "label": SPLIT_LABELS.get(s, s.capitalize()),
+                "delta": d_val,
+                "ci_lo": lo_val,
+                "ci_hi": hi_val,
+                "n_plays": rec.get("n_plays", 0),
+                "verdict": verdict,
+            }
+        )
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # View Renderer
 # ---------------------------------------------------------------------------
 
 def render() -> None:
-    """Render the Situation Explorer with shareable controls and cell detail."""
+    """Render the Situation Explorer with shareable controls and cell panel."""
     inject_css()
     load_res = get_results_bundle()
     render_page_header(load_res)
@@ -262,7 +307,7 @@ def render() -> None:
 
     st.divider()
 
-    # 4. Cell Detail Card
+    # 4. Cell Result Panel (Deliverable D8.2)
     cell_id = get_cell_id(selected_down, selected_dist, selected_zone)
     record = lookup_cell_record(
         cells_df,
@@ -282,41 +327,171 @@ def render() -> None:
         delta_val = record.get("delta")
         ci_lo = record.get("ci_lo")
         ci_hi = record.get("ci_hi")
+        q_bh = record.get("q_bh")
         n_plays = record.get("n_plays", 0)
+        n_games = record.get("n_games", 0)
         n_pass = record.get("n_pass", 0)
         n_run = record.get("n_run", 0)
         phat_med = record.get("phat_median")
+        phat_p25 = record.get("phat_p25")
+        phat_p75 = record.get("phat_p75")
         verdict = record.get("verdict", "cant_tell")
         testable = record.get("testable", True)
-        reason = record.get("reason", "")
+        below_min = record.get("below_min_plays", False)
+        reason = record.get("reason", "No stored reason recorded.")
 
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        with col_m1:
-            st.metric("Tendency Delta (EPA)", format_epa(delta_val))
-        with col_m2:
-            st.metric("95% Clustered CI", format_ci(ci_lo, ci_hi))
-        with col_m3:
-            st.metric("Plays Count", format_int(n_plays))
-        with col_m4:
-            st.metric("Verdict State", str(verdict).replace("_", " ").title())
+        chip_state = verdict if verdict in VERDICT_TOKENS else "cant_tell"
 
-        # Sub-metrics: pass/run counts, phat median
+        # Verdict chip and stored reason
+        st.markdown(
+            f"{verdict_chip(chip_state)} &nbsp;&nbsp; "
+            f"<span style='color: #6C757D; font-size: 0.95rem;'>"
+            f"Stored reason: <em>{reason}</em></span>",
+            unsafe_allow_html=True,
+        )
         st.write("")
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1:
-            st.caption(f"Pass Plays: **{format_int(n_pass)}**")
-        with col_s2:
-            st.caption(f"Run Plays: **{format_int(n_run)}**")
-        with col_s3:
-            phat_ok = phat_med is not None and phat_med == phat_med
-            phat_str = f"{phat_med:.3f}" if phat_ok else "—"
-            st.caption(f"Median p̂: **{phat_str}**")
 
-        if not testable:
-            st.warning(f"Note: This cell is marked untestable ({reason}).")
+        # Untestable or below minimum plays: friendly explanation, no point estimate
+        if not testable or below_min:
+            split_name = selected_split.capitalize()
+            caveat_callout(
+                f"This cell cannot be evaluated in the {split_name} split "
+                f"due to insufficient data or rank deficiency: {reason}. "
+                "Point estimates and intervals are not computed.",
+                kind="warning",
+            )
+            card_val = "Not Testable"
+            card_interval = None
+            q_str = "—"
+        elif verdict == "cant_tell":
+            # For cant_tell: never show a bare point estimate; always the interval
+            card_val = format_ci(ci_lo, ci_hi)
+            card_interval = (
+                (ci_lo, ci_hi)
+                if (ci_lo is not None and ci_hi is not None)
+                else None
+            )
+            q_str = (
+                f"{q_bh:.4f}"
+                if (q_bh is not None and not math.isnan(q_bh))
+                else "—"
+            )
+        else:
+            # Positive or negative verdict (e.g. premium)
+            card_val = format_epa(delta_val)
+            card_interval = (
+                (ci_lo, ci_hi)
+                if (ci_lo is not None and ci_hi is not None)
+                else None
+            )
+            q_str = (
+                f"{q_bh:.4f}"
+                if (q_bh is not None and not math.isnan(q_bh))
+                else "—"
+            )
+
+        # Key metrics: delta card + play/game context
+        c_m1, c_m2, c_m3 = st.columns([2, 1, 1])
+        with c_m1:
+            delta_label = (
+                "Tendency Delta 95% Interval (EPA / play)"
+                if verdict == "cant_tell"
+                else "Tendency Delta (EPA / play)"
+            )
+            metric_card(
+                label=delta_label,
+                value=card_val,
+                interval=card_interval,
+                n=n_plays,
+                help_text=f"BH FDR adjusted q-value: {q_str}",
+            )
+        with c_m2:
+            st.metric("FDR q-value (BH)", q_str)
+            st.metric("Total Plays", format_int(n_plays))
+        with c_m3:
+            st.metric("Games Observed", format_int(n_games))
+            st.metric(
+                "Pass / Run Breakdown",
+                f"{format_int(n_pass)} / {format_int(n_run)}",
+            )
+
+        # Situational pass probability summary (median + IQR)
+        has_phat = phat_med is not None and not math.isnan(phat_med)
+        if has_phat:
+            p25_str = (
+                f"{phat_p25:.3f}"
+                if (phat_p25 is not None and not math.isnan(phat_p25))
+                else "—"
+            )
+            p75_str = (
+                f"{phat_p75:.3f}"
+                if (phat_p75 is not None and not math.isnan(phat_p75))
+                else "—"
+            )
+            st.caption(
+                f"Situational Pass Probability p̂: Median **{phat_med:.3f}** "
+                f"(Middle-Half IQR: [{p25_str}, {p75_str}]) • "
+                f"Sample: **{format_int(n_pass)}** pass plays, "
+                f"**{format_int(n_run)}** run plays across "
+                f"**{format_int(n_games)}** games."
+            )
+        else:
+            st.caption(
+                "Situational Pass Probability p̂: Not available • "
+                f"Sample: **{format_int(n_pass)}** pass plays, "
+                f"**{format_int(n_run)}** run plays."
+            )
+
+        # "All" split: show this cell's verdict in each single split
+        if selected_split == "all":
+            split_verdicts = []
+            for s in ["early", "tune", "holdout"]:
+                rec_s = lookup_cell_record(
+                    cells_df,
+                    split=s,
+                    down=selected_down,
+                    dist=selected_dist,
+                    zone=selected_zone,
+                )
+                v_s = (
+                    rec_s.get("verdict", "cant_tell")
+                    if rec_s
+                    else "cant_tell"
+                )
+                label_s = s.capitalize()
+                split_verdicts.append(
+                    f"**{label_s}**: {verdict_chip(v_s, small=True)}"
+                )
+            chips_joined = " &nbsp;|&nbsp; ".join(split_verdicts)
+            st.markdown(
+                f"Single-split verdicts for this cell: &nbsp;&nbsp;{chips_joined}",
+                unsafe_allow_html=True,
+            )
+
+        # Cross-split interval plot for this cell
+        st.write("")
+        st.markdown("##### Cross-Split Agreement for this Cell")
+        split_rows = build_cell_split_rows(cells_df, cell_id)
+        if split_rows:
+            fig = interval_plot(
+                rows=split_rows,
+                estimate_col="delta",
+                ci_lo_col="ci_lo",
+                ci_hi_col="ci_hi",
+                label_col="label",
+                n_col="n_plays",
+                state_col="verdict",
+                title=f"Tendency Delta Estimates Across Splits ({cell_id})",
+                xaxis_title="Delta (EPA per play)",
+                zero_line=True,
+                height=260,
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     else:
-        msg = f"No cell record found for '{cell_id}' in split '{selected_split}'."
+        msg = (
+            f"No cell record found for '{cell_id}' in split '{selected_split}'."
+        )
         empty_state(msg)
 
     render_page_footer()
