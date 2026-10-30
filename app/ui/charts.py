@@ -414,3 +414,224 @@ def build_placebo_histogram(
     return apply_template(fig), stats
 
 
+# ---------------------------------------------------------------------------
+# Deliverable D8.3: 27-Cell Overview Grid
+# ---------------------------------------------------------------------------
+
+def compute_cells_summary(split_df: pd.DataFrame) -> dict[str, Any]:
+    """Compute summary counts of testable cells and verdicts for a split.
+
+    Parameters
+    ----------
+    split_df : pd.DataFrame
+        DataFrame containing cells for a single split.
+
+    Returns
+    -------
+    dict[str, Any]
+        Dictionary with total, n_testable, n_premium, n_reverse, n_none, n_cant_tell,
+        and a plain-language summary line.
+    """
+    total = len(split_df)
+    n_testable = int(split_df["testable"].sum()) if "testable" in split_df else 0
+
+    if "verdict" in split_df:
+        verdict_series = split_df["verdict"]
+    else:
+        verdict_series = pd.Series(dtype=str)
+    counts = verdict_series.value_counts().to_dict()
+
+    n_premium = int(counts.get("premium", 0))
+    n_reverse = int(counts.get("reverse", 0))
+    n_none = int(counts.get("none", 0))
+    n_cant_tell = int(counts.get("cant_tell", 0))
+
+    summary_line = (
+        f"{n_testable} of {total} cells testable • "
+        f"{n_premium} premium, {n_reverse} reverse, "
+        f"{n_none} none, {n_cant_tell} can't tell."
+    )
+
+    return {
+        "total": total,
+        "n_testable": n_testable,
+        "n_premium": n_premium,
+        "n_reverse": n_reverse,
+        "n_none": n_none,
+        "n_cant_tell": n_cant_tell,
+        "summary_line": summary_line,
+    }
+
+
+def cell_grid_chart(
+    split_df: pd.DataFrame,
+    selected_cell_id: str | None = None,
+) -> go.Figure:
+    """Render a 9x3 interactive grid of all 27 situational cells.
+
+    Rows: 9 combinations of down x distance bucket.
+    Columns: 3 field zones (Red Zone, Midfield, Backed Up).
+
+    Features:
+      - Colored by verdict token color.
+      - "cant_tell" cells display design-system hatched fill (pattern shape '/').
+      - Text inside cell displays verdict icon, delta, and play count N.
+      - Never relies on color alone (icon + label + numbers).
+      - Selection support: customdata contains (down, dist, zone, cell_id).
+
+    Parameters
+    ----------
+    split_df : pd.DataFrame
+        Cells data for the selected split (27 rows).
+    selected_cell_id : str | None
+        Optionally highlight the currently active cell.
+    """
+    from app.ui.theme import VERDICT_TOKENS
+
+    downs = [1, 2, 3]
+    dists = ["short", "medium", "long"]
+    dist_short_labels = {
+        "short": "Short (1–3)",
+        "medium": "Med (4–7)",
+        "long": "Long (8+)",
+    }
+    zones = ["red_zone", "midfield", "backed_up"]
+    zone_titles = {
+        "red_zone": "Red Zone (1–20)",
+        "midfield": "Midfield (21–79)",
+        "backed_up": "Backed Up (80–99)",
+    }
+
+    # 9 rows ordered down 1..3 and dist short..long
+    row_keys = [(d, dist) for d in downs for dist in dists]
+    row_labels = [f"Down {d} • {dist_short_labels[dist]}" for d, dist in row_keys]
+
+    fig = go.Figure()
+
+    # Build one Bar trace per zone column so they stack horizontally into 3 columns
+    for z in zones:
+        bar_colors = []
+        pattern_shapes = []
+        pattern_fgcolors = []
+        bar_texts = []
+        customdata = []
+        bar_line_colors = []
+        bar_line_widths = []
+
+        for d, dist in row_keys:
+            c_id = f"{d}_{dist}_{z}"
+            sub = split_df[split_df["cell_id"] == c_id]
+
+            if not sub.empty:
+                rec = sub.iloc[0].to_dict()
+                verdict = rec.get("verdict", "cant_tell")
+                testable = rec.get("testable", True)
+                delta_val = rec.get("delta")
+                n_plays = rec.get("n_plays", 0)
+                reason = rec.get("reason", "")
+            else:
+                verdict = "cant_tell"
+                testable = False
+                delta_val = None
+                n_plays = 0
+                reason = "No data"
+
+            token = VERDICT_TOKENS.get(verdict, VERDICT_TOKENS["cant_tell"])
+            icon = token.icon
+            color = token.color
+
+            # Hatched fill for cant_tell
+            if verdict == "cant_tell":
+                pattern_shapes.append("/")
+                pattern_fgcolors.append("rgba(80, 80, 80, 0.45)")
+            else:
+                pattern_shapes.append("")
+                pattern_fgcolors.append("rgba(0, 0, 0, 0)")
+
+            # Text inside the cell (icon + delta + plays)
+            is_nan_val = isinstance(delta_val, float) and delta_val != delta_val
+            if not testable:
+                delta_text = "Untestable"
+            elif delta_val is None or is_nan_val:
+                delta_text = "—"
+            else:
+                sign = "+" if delta_val > 0 else ""
+                delta_text = f"Δ {sign}{delta_val:.2f}"
+
+            n_str = f"N={format_int(n_plays)}"
+            cell_text = f"<b>{icon} {token.label[:4]}</b><br>{delta_text}<br>{n_str}"
+
+            # Highlight selected cell with thicker high-contrast border
+            if selected_cell_id and c_id == selected_cell_id:
+                line_color = "#212529"
+                line_width = 3
+            else:
+                line_color = "#FFFFFF"
+                line_width = 1
+
+            bar_colors.append(color)
+            bar_texts.append(cell_text)
+            bar_line_colors.append(line_color)
+            bar_line_widths.append(line_width)
+
+            customdata.append(
+                [d, dist, z, c_id, delta_text, n_str, token.label, reason]
+            )
+
+        fig.add_trace(
+            go.Bar(
+                name=zone_titles[z],
+                y=row_labels,
+                x=[1] * len(row_labels),
+                orientation="h",
+                marker=dict(
+                    color=bar_colors,
+                    pattern=dict(
+                        shape=pattern_shapes,
+                        fgcolor=pattern_fgcolors,
+                    ),
+                    line=dict(color=bar_line_colors, width=bar_line_widths),
+                ),
+                text=bar_texts,
+                textposition="inside",
+                insidetextanchor="middle",
+                textfont=dict(size=11, color="#FFFFFF"),
+                customdata=customdata,
+                hovertemplate=(
+                    "<b>Cell: %{customdata[3]}</b><br>"
+                    "State: %{customdata[6]}<br>"
+                    "Estimate: %{customdata[4]}<br>"
+                    "Sample: %{customdata[5]}<br>"
+                    "Reason: %{customdata[7]}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        barmode="stack",
+        yaxis=dict(
+            autorange="reversed",
+            tickfont=dict(size=12),
+            title="",
+        ),
+        xaxis=dict(
+            visible=False,
+            showgrid=False,
+            zeroline=False,
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5,
+        ),
+        margin=dict(l=10, r=10, t=60, b=10),
+        height=540,
+    )
+
+    return apply_template(fig)
+
+
+

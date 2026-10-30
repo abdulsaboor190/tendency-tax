@@ -473,7 +473,92 @@ def test_build_cell_split_rows():
 
 
 # ---------------------------------------------------------------------------
-# 10. Banned causal words absent
+# 10. Deliverable D8.3 Tests: Summary counts, 27-cell grid, fallback table
+# ---------------------------------------------------------------------------
+
+
+def test_compute_cells_summary_counts_match_real_cells():
+    """Summary counts of testable cells and verdict categories match cells.parquet."""
+    from app.ui.charts import compute_cells_summary
+
+    try:
+        bundle = load_results(source="real")
+    except Exception:
+        bundle = load_results(source="fixtures")
+
+    cells_df = bundle.cells
+    for split in VALID_SPLITS:
+        sub = cells_df[cells_df["split"] == split]
+        summary = compute_cells_summary(sub)
+
+        assert summary["total"] == len(sub) == 27
+        assert summary["n_testable"] == int(sub["testable"].sum())
+
+        counts = sub["verdict"].value_counts().to_dict()
+        assert summary["n_premium"] == int(counts.get("premium", 0))
+        assert summary["n_reverse"] == int(counts.get("reverse", 0))
+        assert summary["n_none"] == int(counts.get("none", 0))
+        assert summary["n_cant_tell"] == int(counts.get("cant_tell", 0))
+
+        # Check line format
+        line = summary["summary_line"]
+        assert f"{summary['n_testable']} of 27 cells testable" in line
+        assert "premium" in line
+        assert "can't tell" in line
+
+
+def test_cell_grid_chart_has_27_cells():
+    """cell_grid_chart produces 3 traces with 9 bars each = 27 cells."""
+    from app.ui.charts import cell_grid_chart
+
+    bundle = load_results(source="fixtures")
+    cells_df = bundle.cells
+    sub = cells_df[cells_df["split"] == "tune"]
+
+    fig = cell_grid_chart(sub)
+    # 3 field zone traces
+    assert len(fig.data) == 3
+    total_cells = sum(len(trace.x) for trace in fig.data)
+    assert total_cells == 27
+
+    # Check customdata format
+    for trace in fig.data:
+        assert len(trace.customdata) == 9
+        for row in trace.customdata:
+            assert len(row) >= 4
+            down_val, dist_val, zone_val, cid = row[:4]
+            assert down_val in VALID_DOWNS
+            assert dist_val in VALID_DISTS
+            assert zone_val in VALID_ZONES
+            assert cid == f"{down_val}_{dist_val}_{zone_val}"
+
+
+def test_fallback_table_has_27_rows():
+    """build_fallback_table produces a 27-row DataFrame for accessibility."""
+    from app.views.situation_explorer import build_fallback_table
+
+    try:
+        bundle = load_results(source="real")
+    except Exception:
+        bundle = load_results(source="fixtures")
+
+    cells_df = bundle.cells
+    for split in VALID_SPLITS:
+        table_df = build_fallback_table(cells_df, split)
+        assert len(table_df) == 27
+        assert "Cell ID" in table_df.columns
+        assert "Down" in table_df.columns
+        assert "Distance" in table_df.columns
+        assert "Field Zone" in table_df.columns
+        assert "State" in table_df.columns
+        assert "Delta (EPA)" in table_df.columns
+        assert "95% CI" in table_df.columns
+        assert "Plays" in table_df.columns
+        assert "Reason" in table_df.columns
+
+
+# ---------------------------------------------------------------------------
+# 11. Banned causal words absent
 # ---------------------------------------------------------------------------
 
 
@@ -502,3 +587,4 @@ def test_no_banned_words_in_situation_explorer():
 
     matches = BANNED_WORDS.findall(text_to_check)
     assert not matches, f"Banned causal words found: {matches}"
+

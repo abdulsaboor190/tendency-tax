@@ -4,6 +4,8 @@ Deliverables:
   - D8.1: Situational controls with query parameter sync
   - D8.2: Cell result panel with stored verdict, uncertainty intervals,
     and cross-split comparison
+  - D8.3: 27-cell overview grid with hatched fill for can't tell, state legend,
+    accessible fallback table, and interactive cell selection
 
 Controls:
   - Down (1, 2, 3)
@@ -30,11 +32,13 @@ from app.data import (
     get_results_bundle,
     set_query_param,
 )
+from app.ui.charts import cell_grid_chart, compute_cells_summary
 from app.ui.components import (
     caveat_callout,
     empty_state,
     interval_plot,
     metric_card,
+    state_legend,
     verdict_chip,
 )
 from app.ui.layout import render_page_footer, render_page_header
@@ -182,12 +186,87 @@ def build_cell_split_rows(
     return rows
 
 
+def build_fallback_table(
+    cells_df: pd.DataFrame,
+    split: str,
+) -> pd.DataFrame:
+    """Build a 27-row text-only table fallback for screen readers and accessibility."""
+    sub_df = cells_df[cells_df["split"] == split]
+    rows: list[dict[str, Any]] = []
+
+    for d in VALID_DOWNS:
+        for dist in VALID_DISTS:
+            for z in VALID_ZONES:
+                c_id = get_cell_id(d, dist, z)
+                cell_row = sub_df[sub_df["cell_id"] == c_id]
+                if not cell_row.empty:
+                    rec = cell_row.iloc[0].to_dict()
+                    testable = rec.get("testable", True)
+                    verdict = rec.get("verdict", "cant_tell")
+                    delta = rec.get("delta")
+                    ci_lo = rec.get("ci_lo")
+                    ci_hi = rec.get("ci_hi")
+                    q_bh = rec.get("q_bh")
+                    n_plays = rec.get("n_plays", 0)
+                    reason = rec.get("reason", "")
+                else:
+                    testable = False
+                    verdict = "cant_tell"
+                    delta = None
+                    ci_lo = None
+                    ci_hi = None
+                    q_bh = None
+                    n_plays = 0
+                    reason = "No data recorded"
+
+                token = VERDICT_TOKENS.get(verdict, VERDICT_TOKENS["cant_tell"])
+                state_str = f"{token.icon} {token.label}"
+
+                if not testable:
+                    d_str = "Untestable"
+                    ci_str = "—"
+                    q_str = "—"
+                elif verdict == "cant_tell":
+                    d_str = "—"
+                    ci_str = format_ci(ci_lo, ci_hi)
+                    q_str = (
+                        f"{q_bh:.4f}"
+                        if (q_bh is not None and not math.isnan(q_bh))
+                        else "—"
+                    )
+                else:
+                    d_str = format_epa(delta)
+                    ci_str = format_ci(ci_lo, ci_hi)
+                    q_str = (
+                        f"{q_bh:.4f}"
+                        if (q_bh is not None and not math.isnan(q_bh))
+                        else "—"
+                    )
+
+                rows.append(
+                    {
+                        "Cell ID": c_id,
+                        "Down": d,
+                        "Distance": DIST_LABELS[dist],
+                        "Field Zone": ZONE_LABELS[z],
+                        "State": state_str,
+                        "Delta (EPA)": d_str,
+                        "95% CI": ci_str,
+                        "FDR q": q_str,
+                        "Plays": format_int(n_plays),
+                        "Reason": reason,
+                    }
+                )
+
+    return pd.DataFrame(rows)
+
+
 # ---------------------------------------------------------------------------
 # View Renderer
 # ---------------------------------------------------------------------------
 
 def render() -> None:
-    """Render the Situation Explorer with shareable controls and cell panel."""
+    """Render the Situation Explorer with controls, 27-cell overview, and cell panel."""
     inject_css()
     load_res = get_results_bundle()
     render_page_header(load_res)
@@ -307,8 +386,91 @@ def render() -> None:
 
     st.divider()
 
-    # 4. Cell Result Panel (Deliverable D8.2)
-    cell_id = get_cell_id(selected_down, selected_dist, selected_zone)
+    # 4. 27-Cell Overview Grid (Deliverable D8.3)
+    st.subheader("27-Cell Situational Overview")
+    split_cells_df = cells_df[cells_df["split"] == selected_split]
+
+    # Data-generated summary line
+    summary_info = compute_cells_summary(split_cells_df)
+    st.markdown(f"**{summary_info['summary_line']}**")
+
+    # State legend
+    state_legend()
+
+    # Interactive Grid
+    current_cell_id = get_cell_id(selected_down, selected_dist, selected_zone)
+    grid_fig = cell_grid_chart(split_cells_df, selected_cell_id=current_cell_id)
+
+    # Streamlit chart selection or selectbox fallback
+    selection = st.plotly_chart(
+        grid_fig,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode=["points"],
+        key="cell_grid_chart",
+    )
+
+    # Check if a cell was selected via click in the chart
+    if selection and hasattr(selection, "get"):
+        points = selection.get("points", [])
+        if points and len(points) > 0:
+            customdata = points[0].get("customdata", [])
+            if customdata and len(customdata) >= 4:
+                sel_d = int(customdata[0])
+                sel_dist = str(customdata[1])
+                sel_zone = str(customdata[2])
+                if (
+                    sel_d != selected_down
+                    or sel_dist != selected_dist
+                    or sel_zone != selected_zone
+                ):
+                    sync_explorer_query_params(
+                        sel_d, sel_dist, sel_zone, selected_split
+                    )
+                    st.rerun()
+
+    # Selectbox fallback to navigate directly to any of the 27 cells
+    all_27_cell_ids = [
+        get_cell_id(d, dist, z)
+        for d in VALID_DOWNS
+        for dist in VALID_DISTS
+        for z in VALID_ZONES
+    ]
+    cur_idx = (
+        all_27_cell_ids.index(current_cell_id)
+        if current_cell_id in all_27_cell_ids
+        else 0
+    )
+
+    def _format_cell_option(cid: str) -> str:
+        parts = cid.split("_", 2)
+        d_val = parts[0]
+        dist_lbl = DIST_LABELS.get(parts[1], parts[1])
+        zone_lbl = ZONE_LABELS.get(parts[2], parts[2])
+        return f"{cid} (Down {d_val} • {dist_lbl} • {zone_lbl})"
+
+    chosen_cell = st.selectbox(
+        "Select cell to inspect (alternative to chart click):",
+        options=all_27_cell_ids,
+        index=cur_idx,
+        format_func=_format_cell_option,
+        key="cell_select_box",
+    )
+    if chosen_cell != current_cell_id:
+        c_parts = chosen_cell.split("_", 2)
+        sync_explorer_query_params(
+            int(c_parts[0]), c_parts[1], c_parts[2], selected_split
+        )
+        st.rerun()
+
+    # Accessible text-only table fallback
+    with st.expander("Accessible Table: All 27 Cells (Screen Reader & Plain Text)"):
+        table_df = build_fallback_table(cells_df, selected_split)
+        st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # 5. Cell Result Panel (Deliverable D8.2)
     record = lookup_cell_record(
         cells_df,
         split=selected_split,
@@ -317,7 +479,7 @@ def render() -> None:
         zone=selected_zone,
     )
 
-    st.subheader(f"Cell Details: `{cell_id}`")
+    st.subheader(f"Cell Details: `{current_cell_id}`")
     st.caption(
         f"Context: Down {selected_down} • {DIST_LABELS[selected_dist]} • "
         f"{ZONE_LABELS[selected_zone]} • Split: {selected_split.capitalize()}"
@@ -471,7 +633,7 @@ def render() -> None:
         # Cross-split interval plot for this cell
         st.write("")
         st.markdown("##### Cross-Split Agreement for this Cell")
-        split_rows = build_cell_split_rows(cells_df, cell_id)
+        split_rows = build_cell_split_rows(cells_df, current_cell_id)
         if split_rows:
             fig = interval_plot(
                 rows=split_rows,
@@ -481,7 +643,7 @@ def render() -> None:
                 label_col="label",
                 n_col="n_plays",
                 state_col="verdict",
-                title=f"Tendency Delta Estimates Across Splits ({cell_id})",
+                title=f"Tendency Delta Estimates Across Splits ({current_cell_id})",
                 xaxis_title="Delta (EPA per play)",
                 zero_line=True,
                 height=260,
@@ -490,7 +652,7 @@ def render() -> None:
 
     else:
         msg = (
-            f"No cell record found for '{cell_id}' in split '{selected_split}'."
+            f"No cell record found for '{current_cell_id}' in split '{selected_split}'."
         )
         empty_state(msg)
 
