@@ -17,6 +17,7 @@ Design-system state mapping (binding, from D7.1 spec):
 import streamlit as st
 
 from app.data import format_ci, format_epa, format_int, get_results_bundle
+from app.ui.charts import build_decile_gap_chart
 from app.ui.components import (
     caveat_callout,
     empty_state,
@@ -203,7 +204,61 @@ def render() -> None:
     st.divider()
 
     # ------------------------------------------------------------------
-    # 5. Power callout (from power.json — not hardcoded)
+    # 5. Central Decile Chart (Deliverable D7.2)
+    # ------------------------------------------------------------------
+    st.subheader("Pass − Run EPA Gap by Predictability Decile")
+
+    # Split dataframes from bundle
+    early_df = None
+    tune_df = None
+    if load_res.bundle.decile_gap_dev is not None:
+        dev_df = load_res.bundle.decile_gap_dev
+        early_df = dev_df[dev_df["split"] == "early"].copy()
+        tune_df = dev_df[dev_df["split"] == "tune"].copy()
+    holdout_df = load_res.bundle.decile_gap_holdout
+
+    include_tune = st.toggle(
+        "Show Tune split (2022–2023)",
+        value=False,
+        help="Display the tune split series alongside early and holdout.",
+    )
+
+    if early_df is not None and not early_df.empty:
+        fig, dropped = build_decile_gap_chart(
+            early_df=early_df,
+            holdout_df=holdout_df,
+            tune_df=tune_df,
+            include_tune=include_tune,
+            min_plays=200,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Dropped bin note
+        if dropped:
+            dropped_notes = [
+                f"Decile {d['decile']} in {d['split']} ({d['reason']})"
+                for d in dropped
+            ]
+            st.caption(
+                "**Dropped bins (< 200 plays of either call):** "
+                f"{'; '.join(dropped_notes)}."
+            )
+
+        # Descriptive caption
+        st.caption(
+            "This chart shows the gap in average EPA between passes and runs at each "
+            "level of how predictable a pass was (decile of pre-snap p̂). "
+            "Decile edges were computed from the early split. "
+            "This visualization is purely descriptive and is not the "
+            "confirmatory test statistic."
+        )
+    else:
+        empty_state("Decile gap data unavailable.")
+
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # 6. Power callout (from power.json — not hardcoded)
     # ------------------------------------------------------------------
     power = load_res.bundle.power
     smallest_delta = power.smallest_delta_80_power_formula
@@ -219,7 +274,7 @@ def render() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 6. Pre-declaration link (plan_commit from primary.json)
+    # 7. Pre-declaration link (plan_commit from primary.json)
     # ------------------------------------------------------------------
     plan_commit = prim.plan_commit
     repo_url = f"{_REPO_BASE}/{plan_commit}"
