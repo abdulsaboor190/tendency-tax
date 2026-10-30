@@ -18,6 +18,8 @@ FROZEN_MODEL_META_PATH: Path = MODELS_DIR / "phat_model_2016_2023.json"
 MODEL_SCORES_PATH: Path = RESULTS_DIR / "model_scores.json"
 CALIBRATION_EARLY_PATH: Path = RESULTS_DIR / "calibration_early.parquet"
 CALIBRATION_TUNE_PATH: Path = RESULTS_DIR / "calibration_tune.parquet"
+MODEL_DIAGNOSTICS_PATH: Path = RESULTS_DIR / "model_diagnostics.json"
+PHAT_BY_BUCKET_PATH: Path = RESULTS_DIR / "phat_by_bucket.parquet"
 
 # Columns to load across project
 USECOLS: list[str] = [
