@@ -6,6 +6,12 @@ AGENTS.md is binding:
 - Pathlib is used throughout to avoid hardcoded OS-specific path separators.
 """
 
+import hashlib
+import inspect
+import json
+import os
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -107,12 +113,21 @@ def inventory(raw_dir: Path | str | None = None) -> list[dict[str, Any]]:
     return records
 
 
+def _read_season_raw(year: int, raw_dir: Path | str | None = None) -> pd.DataFrame:
+    """Read a raw season file using USECOLS.
+
+    Used by the caching pipeline.
+    """
+    file_path = find_season_file(year, raw_dir=raw_dir)
+    return pd.read_csv(file_path, usecols=config.USECOLS)
+
+
 def read_season(year: int, raw_dir: Path | str | None = None) -> pd.DataFrame:
     """Read a season's play-by-play data loading only config.USECOLS columns.
 
     SAFETY / HOLDOUT PROTECTION:
     Rows for seasons in config.SPLITS['holdout'] (2024-2025) must never be read.
-    Raises PermissionError if a holdout season is requested.
+    Raises PermissionError if a holdout season is requested directly.
     """
     holdout_seasons = set(config.SPLITS.get("holdout", [2024, 2025]))
     if year in holdout_seasons:
@@ -121,8 +136,7 @@ def read_season(year: int, raw_dir: Path | str | None = None) -> pd.DataFrame:
             "is strictly forbidden by AGENTS.md rule 1."
         )
 
-    file_path = find_season_file(year, raw_dir=raw_dir)
-    return pd.read_csv(file_path, usecols=config.USECOLS)
+    return _read_season_raw(year, raw_dir=raw_dir)
 
 
 def prepare(raw_df: pd.DataFrame) -> pd.DataFrame:
@@ -289,6 +303,206 @@ def verify_early_tune_counts(raw_dir: Path | str | None = None) -> dict[str, Any
         "tune_plays": tune_plays,
         "tune_games": len(tune_games),
     }
+
+
+def _is_plan_committed() -> bool:
+    """Check via git log whether PLAN.md has been committed."""
+    try:
+        proc = subprocess.run(
+            ["git", "log", "-n", "1", "--", "PLAN.md"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode == 0 and "commit " in proc.stdout
+    except Exception:
+        return False
+
+
+def _get_current_git_commit() -> str:
+    """Get the current git commit hash."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _log_holdout_access(caller_name: str) -> None:
+    """Append entry to results/HOLDOUT_ACCESS.log with caller and commit."""
+    config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    commit_hash = _get_current_git_commit()
+    log_line = f"{timestamp} | caller={caller_name} | commit={commit_hash}\n"
+    with open(config.HOLDOUT_ACCESS_LOG, "a", encoding="utf-8") as f:
+        f.write(log_line)
+
+
+def _compute_split_hash(
+    split_name: str,
+    raw_dir: Path | str | None = None,
+) -> str:
+    """Compute combined SHA-256 hash of raw files for the split and src/config.py."""
+    directory = Path(raw_dir) if raw_dir is not None else config.RAW_DATA_DIR
+    hasher = hashlib.sha256()
+
+    seasons = config.SPLITS[split_name]
+    for year in sorted(seasons):
+        file_path = find_season_file(year, raw_dir=directory)
+        hasher.update(file_path.name.encode("utf-8"))
+        with open(file_path, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                hasher.update(chunk)
+
+    config_file = Path("src/config.py")
+    if config_file.exists():
+        hasher.update(config_file.read_bytes())
+
+    return hasher.hexdigest()
+
+
+def _ensure_split_cached(
+    split_name: str,
+    raw_dir: Path | str | None = None,
+    cache_dir: Path | str | None = None,
+) -> Path:
+    """Ensure the parquet cache for split_name is built and up-to-date."""
+    directory = Path(raw_dir) if raw_dir is not None else config.RAW_DATA_DIR
+    target_cache_dir = Path(cache_dir) if cache_dir is not None else config.CACHE_DIR
+    target_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = target_cache_dir / f"{split_name}.parquet"
+    meta_path = target_cache_dir / f"{split_name}.meta.json"
+
+    current_hash = _compute_split_hash(split_name, raw_dir=directory)
+
+    if parquet_path.exists() and meta_path.exists():
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if meta.get("hash") == current_hash:
+                return parquet_path
+        except Exception:
+            pass
+
+    # Rebuild cache for this split
+    seasons = config.SPLITS[split_name]
+    dfs: list[pd.DataFrame] = []
+    for year in seasons:
+        raw_df = _read_season_raw(year, raw_dir=directory)
+        prep_df = prepare(raw_df)
+        dfs.append(prep_df)
+
+    combined = pd.concat(dfs, ignore_index=True)
+    combined.to_parquet(parquet_path, index=False, engine="pyarrow")
+
+    meta_content = {
+        "split": split_name,
+        "hash": current_hash,
+        "plays": len(combined),
+        "games": int(combined["game_id"].nunique()),
+    }
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta_content, f, indent=2)
+
+    return parquet_path
+
+
+def get_split(
+    name: str,
+    raw_dir: Path | str | None = None,
+    cache_dir: Path | str | None = None,
+) -> pd.DataFrame:
+    """Retrieve prepared data for a specific split.
+
+    - 'early' and 'tune': return the prepared rows for that split.
+    - 'holdout': raise a clear error UNLESS BOTH:
+      (a) environment variable TENDENCY_ALLOW_HOLDOUT equals '1'
+      (b) `git log -- PLAN.md` shows PLAN.md has been committed
+      When allowed, returns holdout rows AND appends one line to
+      results/HOLDOUT_ACCESS.log with timestamp, caller name, and commit hash.
+    - Any other name: raises ValueError.
+    """
+    if name not in ("early", "tune", "holdout"):
+        raise ValueError(
+            f"Invalid split name '{name}'. Must be one of: 'early', 'tune', 'holdout'"
+        )
+
+    if name == "holdout":
+        env_allowed = os.environ.get(config.HOLDOUT_ENV_VAR) == "1"
+        plan_committed = _is_plan_committed()
+
+        if not (env_allowed and plan_committed):
+            reasons: list[str] = []
+            if not env_allowed:
+                reasons.append(f"{config.HOLDOUT_ENV_VAR} != '1'")
+            if not plan_committed:
+                reasons.append("PLAN.md is not committed in git")
+            raise PermissionError(
+                f"Holdout split is locked. Requirements not met: {', '.join(reasons)}"
+            )
+
+        caller_name = (
+            inspect.stack()[1].function if len(inspect.stack()) > 1 else "unknown"
+        )
+        _log_holdout_access(caller_name=caller_name)
+
+    parquet_path = _ensure_split_cached(name, raw_dir=raw_dir, cache_dir=cache_dir)
+    return pd.read_parquet(parquet_path)
+
+
+def split_counts(
+    raw_dir: Path | str | None = None,
+    cache_dir: Path | str | None = None,
+) -> pd.DataFrame:
+    """Return only the number of plays and games per split.
+
+    Does not return or expose epa, success, or any outcome column.
+    Safe to call without unlocking holdout.
+    """
+    rows: list[dict[str, Any]] = []
+
+    print("\nSplit Counts Summary:")
+    header = f"{'Split':<10} | {'Plays':<10} | {'Games':<8}"
+    print("-" * len(header))
+    print(header)
+    print("-" * len(header))
+
+    holdout_per_season: dict[int, dict[str, int]] = {}
+
+    for split_name in ("early", "tune", "holdout"):
+        parquet_path = _ensure_split_cached(
+            split_name, raw_dir=raw_dir, cache_dir=cache_dir
+        )
+        meta_df = pd.read_parquet(parquet_path, columns=["game_id", "season"])
+        n_plays = len(meta_df)
+        n_games = int(meta_df["game_id"].nunique())
+        rows.append({"split": split_name, "plays": n_plays, "games": n_games})
+        print(f"{split_name:<10} | {n_plays:<10,d} | {n_games:<8,d}")
+
+        if split_name == "holdout":
+            for y in sorted(meta_df["season"].unique()):
+                sub = meta_df[meta_df["season"] == y]
+                holdout_per_season[y] = {
+                    "plays": len(sub),
+                    "games": int(sub["game_id"].nunique()),
+                }
+
+    print("-" * len(header))
+
+    if holdout_per_season:
+        print("Holdout per-season breakdown:")
+        for y, counts in holdout_per_season.items():
+            print(f"  {y}: {counts['plays']:,d} plays, {counts['games']} games")
+
+    return pd.DataFrame(rows)
 
 
 def validate_all(raw_dir: Path | str | None = None) -> None:

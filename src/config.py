@@ -8,6 +8,10 @@ from typing import Any
 
 # Paths
 RAW_DATA_DIR: Path = Path("data/raw")
+CACHE_DIR: Path = Path("data/cache")
+RESULTS_DIR: Path = Path("results")
+HOLDOUT_ACCESS_LOG: Path = Path("results/HOLDOUT_ACCESS.log")
+HOLDOUT_ENV_VAR: str = "TENDENCY_ALLOW_HOLDOUT"
 
 # Columns to load across project
 USECOLS: list[str] = [
