@@ -28,7 +28,13 @@ from app.data import (
     get_results_bundle,
     set_query_param,
 )
-from app.ui.components import caveat_callout, empty_state, metric_card
+from app.ui.charts import build_league_strip_chart, build_team_shrunk_chart
+from app.ui.components import (
+    caveat_callout,
+    empty_state,
+    metric_card,
+    verdict_chip,
+)
 from app.ui.layout import render_page_footer, render_page_header
 from app.ui.theme import inject_css
 
@@ -215,6 +221,13 @@ def render() -> None:
         "of at least **65%** (strong pass lean) or at most **35%** (strong run lean); "
         "**followed** means the team made the situational expected call, while "
         "**broke** means the offense called the alternative play type."
+    )
+
+    caveat_callout(
+        "This is an exploratory description of team tendencies, not evidence "
+        "of why a team does what it does. Team call rates reflect personnel, "
+        "game scripts, and opponent scouting.",
+        kind="caveat",
     )
 
     st.divider()
@@ -438,12 +451,94 @@ def render() -> None:
 
             if warn_low_n:
                 caveat_callout(
-                    f"{selected_team} had fewer than 60 plays breaking the lean"
-                    f" in {selected_season} (N = {n_break}). Single-season "
-                    "unadjusted estimates with small sample sizes carry high "
-                    "sampling variability.",
+                    f"Warning: {selected_team} had only {n_break} plays breaking "
+                    f"the situational lean in {selected_season} (fewer than 60). "
+                    "Unadjusted single-season estimates with small samples carry "
+                    "high sampling noise and uncertainty.",
                     kind="warning",
                 )
+                col_chip, col_note = st.columns([1, 4])
+                with col_chip:
+                    verdict_chip("cant_tell")
+                with col_note:
+                    st.caption(
+                        "Because this team-season has fewer than 60 breaking "
+                        "plays, we cannot reliably determine its unadjusted "
+                        "tendency gap from sample noise alone."
+                    )
+
+            # 4. Empirical-Bayes Shrinkage Comparison (D9.2)
+            st.write("")
+            st.subheader(
+                f"Empirical-Bayes Shrinkage: {selected_team} ({selected_season})"
+            )
+
+            mu_league = record.get("mu_league", 0.0)
+            tau2 = record.get("tau2", 0.0)
+            shrink_factor = record.get("shrink_factor", 0.0)
+            d_shrunk = record.get("d_shrunk", mu_league)
+            shrunk_lo = record.get("shrunk_lo", d_shrunk)
+            shrunk_hi = record.get("shrunk_hi", d_shrunk)
+
+            # Raw 95% CI bounds
+            raw_ci_lo = (
+                d_raw - 1.96 * se_raw
+                if (d_raw is not None and se_raw is not None)
+                else None
+            )
+            raw_ci_hi = (
+                d_raw + 1.96 * se_raw
+                if (d_raw is not None and se_raw is not None)
+                else None
+            )
+
+            if raw_ci_lo is not None and raw_ci_hi is not None:
+                shrunk_chart = build_team_shrunk_chart(
+                    raw_estimate=d_raw,
+                    raw_ci_lo=raw_ci_lo,
+                    raw_ci_hi=raw_ci_hi,
+                    raw_n=n_break,
+                    shrunk_estimate=d_shrunk,
+                    shrunk_ci_lo=shrunk_lo,
+                    shrunk_ci_hi=shrunk_hi,
+                    mu_league=mu_league,
+                    split=selected_split,
+                    team_label=f"{selected_team} {selected_season}",
+                )
+                st.plotly_chart(shrunk_chart, use_container_width=True)
+
+            # Plain-language explanation of shrinkage
+            # shrink_factor is weight on raw estimate (tau2 / (tau2 + se2)).
+            # movement towards league mean = (1 - shrink_factor) * 100%
+            pull_pct = (1.0 - shrink_factor) * 100.0
+            st.markdown(
+                f"**How shrinkage works**: The estimate was pulled "
+                f"**{pull_pct:.1f}%** of the way from the observed raw "
+                f"difference ({format_epa(d_raw)}) toward the league "
+                f"average ({format_epa(mu_league)}), producing a shrunk "
+                f"estimate of **{format_epa(d_shrunk)}** (95% interval "
+                f"[{shrunk_lo:+.3f}, {shrunk_hi:+.3f}]). Teams with smaller "
+                "samples or noisier outcomes are pulled closer to the league "
+                "average to protect against extreme flukes."
+            )
+
+            # 5. League Distribution Strip
+            st.write("")
+            split_lbl = SPLIT_LABELS.get(selected_split, selected_split)
+            st.markdown(f"**League Overview ({split_lbl})**")
+            st.caption(
+                f"Distribution of shrunk estimates across all franchises in "
+                f"the {selected_split} split. The league-wide average tendency "
+                f"difference is **{format_epa(mu_league)}** EPA/play with a "
+                f"between-team variance (τ²) of **{tau2:.5f}**."
+            )
+            strip_fig = build_league_strip_chart(
+                teams_df=teams_df,
+                split=selected_split,
+                selected_team=selected_team,
+                selected_season=selected_season,
+            )
+            st.plotly_chart(strip_fig, use_container_width=True)
 
     else:
         msg = (

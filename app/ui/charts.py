@@ -634,4 +634,283 @@ def cell_grid_chart(
     return apply_template(fig)
 
 
+def build_team_shrunk_chart(
+    raw_estimate: float,
+    raw_ci_lo: float,
+    raw_ci_hi: float,
+    raw_n: int | None,
+    shrunk_estimate: float,
+    shrunk_ci_lo: float,
+    shrunk_ci_hi: float,
+    mu_league: float,
+    split: str,
+    team_label: str,
+) -> go.Figure:
+    """Build comparison chart of raw vs empirical-Bayes shrunk estimate.
+
+    Parameters
+    ----------
+    raw_estimate : float
+        Raw difference in EPA per play (broke - followed).
+    raw_ci_lo : float
+        Lower bound of raw 95% confidence interval.
+    raw_ci_hi : float
+        Upper bound of raw 95% confidence interval.
+    raw_n : int | None
+        Number of break plays.
+    shrunk_estimate : float
+        Empirical Bayes shrunk estimate (d_shrunk).
+    shrunk_ci_lo : float
+        Lower bound of shrunk 95% posterior interval (shrunk_lo).
+    shrunk_ci_hi : float
+        Upper bound of shrunk 95% posterior interval (shrunk_hi).
+    mu_league : float
+        League mean estimate (mu_league).
+    split : str
+        Split identifier ('early', 'tune', 'holdout') for color coding.
+    team_label : str
+        Display string for team and season (e.g. 'KC 2023').
+
+    Returns
+    -------
+    go.Figure
+        Styled horizontal interval chart with league mean reference line.
+    """
+    split_color = SERIES_COLORS.get(split, "#0072B2")
+    raw_color = "#6C757D"  # Muted grey for unadjusted raw estimate
+
+    y_labels = [f"Shrunk: {team_label}", f"Raw: {team_label}"]
+    estimates = [shrunk_estimate, raw_estimate]
+    ci_los = [shrunk_ci_lo, raw_ci_lo]
+    ci_his = [shrunk_ci_hi, raw_ci_hi]
+
+    errors_plus = [hi - est for est, hi in zip(estimates, ci_his, strict=False)]
+    errors_minus = [est - lo for est, lo in zip(estimates, ci_los, strict=False)]
+    colors = [split_color, raw_color]
+
+    n_raw_str = f"N={format_int(raw_n)}" if raw_n is not None else ""
+    customdata = [
+        [format_ci(shrunk_ci_lo, shrunk_ci_hi), "Empirical-Bayes Shrunk"],
+        [format_ci(raw_ci_lo, raw_ci_hi), f"Raw difference ({n_raw_str})"],
+    ]
+
+    fig = go.Figure()
+
+    # Zero reference line
+    fig.add_vline(
+        x=0.0,
+        line_dash="dot",
+        line_color="rgba(138, 143, 152, 0.5)",
+        line_width=1.5,
+    )
+
+    # League mean reference line
+    fig.add_vline(
+        x=mu_league,
+        line_dash="dash",
+        line_color="#E69F00" if split != "tune" else "#0072B2",
+        line_width=2,
+        annotation_text=f"League Mean ({format_epa(mu_league)})",
+        annotation_position="top right",
+        annotation_font=dict(size=11, color="#495057"),
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=estimates,
+            y=y_labels,
+            mode="markers",
+            marker=dict(size=12, color=colors),
+            error_x=dict(
+                type="data",
+                symmetric=False,
+                array=errors_plus,
+                arrayminus=errors_minus,
+                thickness=2.5,
+                width=8,
+                color="#6C757D",
+            ),
+            customdata=customdata,
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Type: %{customdata[1]}<br>"
+                "Estimate: %{x:.3f} EPA/play<br>"
+                "95% Interval: %{customdata[0]}"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text="Raw vs. Shrunk Estimate (EPA per play)",
+            font=dict(size=14),
+        ),
+        xaxis=dict(
+            title="Difference in EPA / play (Break − Follow)",
+            zeroline=False,
+        ),
+        yaxis=dict(
+            autorange="reversed",
+            tickfont=dict(size=12),
+        ),
+        margin=dict(l=10, r=20, t=50, b=40),
+        height=220,
+        showlegend=False,
+    )
+
+    return apply_template(fig)
+
+
+def build_league_strip_chart(
+    teams_df: pd.DataFrame,
+    split: str,
+    selected_team: str,
+    selected_season: int,
+) -> go.Figure:
+    """Build dot plot strip showing all shrunk estimates in the split.
+
+    Parameters
+    ----------
+    teams_df : pd.DataFrame
+        Teams DataFrame containing 'split', 'season', 'team', 'd_shrunk', etc.
+    split : str
+        Active data split.
+    selected_team : str
+        Selected team abbreviation.
+    selected_season : int
+        Selected season.
+
+    Returns
+    -------
+    go.Figure
+        Dot plot strip with marked selected team and league mean reference line.
+    """
+    sub = teams_df[teams_df["split"] == split].copy()
+    if sub.empty:
+        return apply_template(go.Figure())
+
+    mu = float(sub["mu_league"].iloc[0])
+    split_color = SERIES_COLORS.get(split, "#0072B2")
+
+    is_sel = (sub["team"] == selected_team) & (sub["season"] == selected_season)
+    sel_rows = sub[is_sel]
+    other_rows = sub[~is_sel]
+
+    fig = go.Figure()
+
+    # League mean reference line
+    fig.add_vline(
+        x=mu,
+        line_dash="dash",
+        line_color="#333333",
+        line_width=1.5,
+        annotation_text=f"League Mean: {format_epa(mu)}",
+        annotation_position="top left",
+        annotation_font=dict(size=10, color="#6C757D"),
+    )
+
+    # Zero line
+    fig.add_vline(
+        x=0.0,
+        line_dash="dot",
+        line_color="rgba(138, 143, 152, 0.4)",
+        line_width=1,
+    )
+
+    # Other team-seasons (semi-transparent dots)
+    if not other_rows.empty:
+        other_customdata = [
+            [
+                r["team"],
+                int(r["season"]),
+                format_epa(r["d_shrunk"]),
+                format_ci(r["shrunk_lo"], r["shrunk_hi"]),
+            ]
+            for _, r in other_rows.iterrows()
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=other_rows["d_shrunk"],
+                y=[0] * len(other_rows),
+                mode="markers",
+                name="Other team-seasons",
+                marker=dict(
+                    size=9,
+                    color=split_color,
+                    opacity=0.45,
+                    line=dict(color="#FFFFFF", width=0.5),
+                ),
+                customdata=other_customdata,
+                hovertemplate=(
+                    "<b>%{customdata[0]} (%{customdata[1]})</b><br>"
+                    "Shrunk Estimate: %{customdata[2]} EPA<br>"
+                    "Interval: %{customdata[3]}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    # Selected team-season (highlighted marker)
+    if not sel_rows.empty:
+        sel_row = sel_rows.iloc[0]
+        sel_customdata = [[
+            sel_row["team"],
+            int(sel_row["season"]),
+            format_epa(sel_row["d_shrunk"]),
+            format_ci(sel_row["shrunk_lo"], sel_row["shrunk_hi"]),
+        ]]
+        fig.add_trace(
+            go.Scatter(
+                x=[sel_row["d_shrunk"]],
+                y=[0],
+                mode="markers",
+                name=f"{selected_team} ({selected_season})",
+                marker=dict(
+                    size=16,
+                    color="#D55E00",
+                    symbol="diamond",
+                    line=dict(color="#212529", width=2),
+                ),
+                customdata=sel_customdata,
+                hovertemplate=(
+                    "<b>%{customdata[0]} (%{customdata[1]}) [Selected]</b><br>"
+                    "Shrunk Estimate: %{customdata[2]} EPA<br>"
+                    "Interval: %{customdata[3]}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text="Distribution of Shrunk Tendencies across the League",
+            font=dict(size=13),
+        ),
+        xaxis=dict(
+            title="Shrunk Difference in EPA / play (Break − Follow)",
+            zeroline=False,
+        ),
+        yaxis=dict(
+            visible=False,
+            showgrid=False,
+            zeroline=False,
+            range=[-1, 1],
+        ),
+        height=180,
+        margin=dict(l=10, r=20, t=40, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=11),
+        ),
+    )
+
+    return apply_template(fig)
+
+
+
 

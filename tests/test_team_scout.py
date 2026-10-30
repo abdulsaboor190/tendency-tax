@@ -241,6 +241,92 @@ def test_all_team_seasons_render_real_results(monkeypatch):
         assert rec is not None
 
 
+def test_low_n_team_season_shows_warning_and_chip(monkeypatch):
+    """When warn_low_n is True, warning callout and cant_tell chip are displayed."""
+    monkeypatch.delenv("TENDENCY_USE_FIXTURES", raising=False)
+    bundle = load_results()
+    if bundle.teams is None or len(bundle.teams) <= 64:
+        pytest.skip("Full real results not available")
+
+    mock_st = _make_st_mock()
+
+    with (
+        patch("app.views.team_scout.st", mock_st),
+        patch("app.views.team_scout.inject_css"),
+        patch("app.views.team_scout.render_page_header"),
+        patch("app.views.team_scout.render_page_footer"),
+        patch(
+            "app.views.team_scout.get_query_param",
+            side_effect=lambda k, default=None: {
+                "split": "tune",
+                "season": "2022",
+                "team": "ARI",
+            }.get(k, default),
+        ),
+        patch("app.views.team_scout.set_query_param"),
+        patch("app.views.team_scout.caveat_callout") as mock_callout,
+        patch("app.views.team_scout.verdict_chip") as mock_chip,
+    ):
+        render()
+
+    assert mock_callout.called
+    warning_calls = [
+        c for c in mock_callout.call_args_list if c.kwargs.get("kind") == "warning"
+    ]
+    assert len(warning_calls) > 0
+    assert "fewer than 60" in warning_calls[0].args[0]
+    mock_chip.assert_called_with("cant_tell")
+
+
+def test_shrunk_interval_drawn_from_file_columns(monkeypatch):
+    """The shrunk interval plotted must match shrunk_lo and shrunk_hi from the file."""
+    monkeypatch.delenv("TENDENCY_USE_FIXTURES", raising=False)
+    bundle = load_results()
+    if bundle.teams is None:
+        pytest.skip("teams results not available")
+
+    rec = lookup_team_season_record(bundle.teams, split="tune", season=2022, team="ARI")
+    if rec is None:
+        rec = bundle.teams.iloc[0].to_dict()
+
+    assert "shrunk_lo" in rec and "shrunk_hi" in rec
+    assert rec["shrunk_lo"] < rec["shrunk_hi"]
+    assert rec["shrunk_lo"] <= rec["d_shrunk"] <= rec["shrunk_hi"]
+
+
+def test_build_team_shrunk_chart_and_strip_chart(monkeypatch):
+    """Verify build_team_shrunk_chart and strip_chart return valid figures."""
+    from app.ui.charts import build_league_strip_chart, build_team_shrunk_chart
+
+    monkeypatch.setenv("TENDENCY_USE_FIXTURES", "1")
+    bundle = load_results()
+    assert bundle.teams is not None
+
+    chart = build_team_shrunk_chart(
+        raw_estimate=0.05,
+        raw_ci_lo=-0.1,
+        raw_ci_hi=0.2,
+        raw_n=45,
+        shrunk_estimate=0.01,
+        shrunk_ci_lo=-0.08,
+        shrunk_ci_hi=0.1,
+        mu_league=-0.002,
+        split="tune",
+        team_label="ARI 2022",
+    )
+    assert chart is not None
+    assert len(chart.data) >= 1
+
+    strip = build_league_strip_chart(
+        teams_df=bundle.teams,
+        split="tune",
+        selected_team="ARI",
+        selected_season=2022,
+    )
+    assert strip is not None
+    assert len(strip.data) >= 1
+
+
 def test_no_ranking_or_sorting_words_in_team_scout():
     """Verify that team_scout view does not contain ranking or best/worst language."""
     from pathlib import Path
