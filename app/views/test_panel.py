@@ -27,6 +27,7 @@ from app.ui.components import (
 from app.ui.layout import render_page_footer, render_page_header
 from app.ui.theme import inject_css
 from app.views.about_method import render_method_content
+from app.views.exploratory import render_exploratory_checks
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -319,7 +320,14 @@ def render() -> None:
     st.divider()
 
     # ------------------------------------------------------------------
-    # 7. Power callout (from power.json — not hardcoded)
+    # 7. Exploratory Checks (Deliverable D7.5)
+    # ------------------------------------------------------------------
+    render_exploratory_checks(load_res.bundle.robustness)
+
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # 8. Power callout (from power.json — not hardcoded)
     # ------------------------------------------------------------------
     power = load_res.bundle.power
     smallest_delta = power.smallest_delta_80_power_formula
@@ -335,13 +343,13 @@ def render() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 8. Method Drawer (Deliverable D7.4)
+    # 9. Method Drawer (Deliverable D7.4)
     # ------------------------------------------------------------------
     with st.expander("How this was computed (Method details)", expanded=False):
         render_method_content(prim, in_expander=True)
 
     # ------------------------------------------------------------------
-    # 9. Pre-declaration link (plan_commit from primary.json)
+    # 10. Pre-declaration link (plan_commit from primary.json)
     # ------------------------------------------------------------------
     plan_commit = prim.plan_commit
     repo_url = f"{_REPO_BASE}/{plan_commit}"
