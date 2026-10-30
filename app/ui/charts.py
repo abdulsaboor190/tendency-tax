@@ -1,8 +1,10 @@
-"""Chart components and builders for Tendency Tax (Deliverable D7.2).
+"""Chart components and builders for Tendency Tax (Deliverables D7.2, D7.3).
 
 Provides interactive Plotly visualizations conforming to the design system:
   - decile_gap_chart: Pass-minus-run EPA gap by decile of predicted pass probability.
   - drop_low_play_deciles: Filters out deciles with fewer than min_plays calls.
+  - placebo_histogram: Histogram of shuffled-data null estimates vs observed delta.
+  - check_placebo_shift: Detects whether the placebo null is shifted away from zero.
 """
 
 from __future__ import annotations
@@ -12,8 +14,12 @@ from typing import Any
 import pandas as pd
 import plotly.graph_objects as go
 
-from app.data import format_ci, format_int
+from app.data import format_ci, format_epa, format_int
 from app.ui.theme import SERIES_COLORS, apply_template
+
+# Threshold for flagging an uncentered placebo null:
+# If |median| > NULL_SHIFT_SD_THRESHOLD * SD, a caveat warning is triggered.
+NULL_SHIFT_SD_THRESHOLD: float = 0.5
 
 
 def drop_low_play_deciles(
@@ -234,3 +240,177 @@ def build_decile_gap_chart(
     )
 
     return apply_template(fig), all_dropped
+
+
+def check_placebo_shift(
+    null_deltas: pd.Series | list[float],
+    threshold_factor: float = NULL_SHIFT_SD_THRESHOLD,
+) -> dict[str, Any]:
+    """Assess whether the placebo null distribution is substantially shifted from zero.
+
+    Parameters
+    ----------
+    null_deltas : pd.Series or list[float]
+        Series of null delta values from permutation test.
+    threshold_factor : float
+        Multiple of standard deviation to use as the shift threshold.
+
+    Returns
+    -------
+    dict[str, Any]
+        Dictionary with:
+          - median: float
+          - sd: float
+          - threshold: float (threshold_factor * sd)
+          - is_shifted: bool (|median| > threshold)
+          - pct_2_5: float
+          - pct_97_5: float
+    """
+    s = pd.Series(null_deltas).dropna()
+    if s.empty:
+        return {
+            "median": 0.0,
+            "sd": 0.0,
+            "threshold": 0.0,
+            "is_shifted": False,
+            "pct_2_5": 0.0,
+            "pct_97_5": 0.0,
+        }
+
+    median_val = float(s.median())
+    sd_val = float(s.std(ddof=1)) if len(s) > 1 else 0.0
+    threshold = threshold_factor * sd_val
+    is_shifted = abs(median_val) > threshold
+    pct_2_5 = float(s.quantile(0.025))
+    pct_97_5 = float(s.quantile(0.975))
+
+    return {
+        "median": median_val,
+        "sd": sd_val,
+        "threshold": threshold,
+        "is_shifted": is_shifted,
+        "pct_2_5": pct_2_5,
+        "pct_97_5": pct_97_5,
+    }
+
+
+def build_placebo_histogram(
+    placebo_df: pd.DataFrame,
+    observed_delta: float,
+    split_name: str = "Holdout (2024–2025)",
+) -> tuple[go.Figure, dict[str, Any]]:
+    """Build the placebo permutation null histogram with shaded range and markers.
+
+    Features:
+      - 500 shuffled-data estimates of delta.
+      - 2.5–97.5% range shaded.
+      - Observed delta as a solid vertical line.
+      - Null median as a dashed vertical line.
+      - Zero reference line.
+      - Uses registered 'tendency' Plotly template.
+
+    Parameters
+    ----------
+    placebo_df : pd.DataFrame
+        DataFrame with 'null_delta' column.
+    observed_delta : float
+        The observed point estimate of delta on the corresponding split.
+    split_name : str
+        Label for the split being evaluated.
+
+    Returns
+    -------
+    tuple[go.Figure, dict[str, Any]]
+        The Plotly Figure and the shift check summary dictionary.
+    """
+    if placebo_df.empty or "null_delta" not in placebo_df.columns:
+        fig = go.Figure()
+        return apply_template(fig), check_placebo_shift([])
+
+    null_deltas = placebo_df["null_delta"].dropna()
+    stats = check_placebo_shift(null_deltas)
+
+    median_val = stats["median"]
+    p025 = stats["pct_2_5"]
+    p975 = stats["pct_97_5"]
+
+    fig = go.Figure()
+
+    # 1. Shaded 2.5% - 97.5% null region
+    fig.add_vrect(
+        x0=p025,
+        x1=p975,
+        fillcolor="rgba(138, 143, 152, 0.16)",
+        line_width=0,
+        layer="below",
+    )
+
+    # 2. Histogram of null replications
+    fig.add_trace(
+        go.Histogram(
+            x=null_deltas,
+            nbinsx=35,
+            name="Shuffled-data null (500 reps)",
+            marker_color="#8A8F98",
+            opacity=0.75,
+            hovertemplate=(
+                "Null Δ bin: %{x:.3f}<br>"
+                "Count: %{y}"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    # 3. Reference line at zero
+    fig.add_vline(
+        x=0.0,
+        line_dash="dot",
+        line_color="rgba(138, 143, 152, 0.7)",
+        line_width=1.5,
+    )
+
+    # 4. Null median vertical line
+    fig.add_vline(
+        x=median_val,
+        line_dash="dash",
+        line_color="#E69F00",  # Orange accent
+        line_width=2.0,
+        annotation_text=f"Null Median: {format_epa(median_val)}",
+        annotation_position="top left",
+        annotation_font=dict(size=12, color="#E69F00"),
+    )
+
+    # 5. Observed delta vertical line
+    fig.add_vline(
+        x=observed_delta,
+        line_dash="solid",
+        line_color="#0072B2",  # Okabe-Ito Blue
+        line_width=2.5,
+        annotation_text=f"Observed Δ: {format_epa(observed_delta)}",
+        annotation_position="top right",
+        annotation_font=dict(size=12, color="#0072B2"),
+    )
+
+    fig.update_layout(
+        title=f"Placebo Distribution: Permuted Situation vs. Call ({split_name})",
+        xaxis=dict(
+            title="Estimated Delta (EPA / play)",
+            zeroline=False,
+        ),
+        yaxis=dict(
+            title="Replication Count",
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,
+            xanchor="center",
+            x=0.5,
+        ),
+        margin=dict(l=10, r=20, t=50, b=80),
+        height=400,
+    )
+
+    return apply_template(fig), stats
+
+

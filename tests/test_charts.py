@@ -15,7 +15,13 @@ import pandas as pd
 import pytest
 
 from app.data import load_results
-from app.ui.charts import build_decile_gap_chart, drop_low_play_deciles
+from app.ui.charts import (
+    NULL_SHIFT_SD_THRESHOLD,
+    build_decile_gap_chart,
+    build_placebo_histogram,
+    check_placebo_shift,
+    drop_low_play_deciles,
+)
 
 # ---------------------------------------------------------------------------
 # 1. Dropped-bin logic on hand-made DataFrame
@@ -172,3 +178,68 @@ def test_chart_layout_specs():
     # Horizontal zero reference line exists in layout shapes
     shapes = fig.layout.shapes
     assert any(s.type == "line" and s.y0 == 0.0 and s.y1 == 0.0 for s in shapes)
+
+
+# ---------------------------------------------------------------------------
+# 6. Placebo Shift Warning Tests (Deliverable D7.3)
+# ---------------------------------------------------------------------------
+
+class TestPlaceboShiftWarning:
+    """Verify warning triggers when |median| > 0.5 * SD, and not when centered."""
+
+    def test_centered_null_triggers_no_warning(self):
+        """Centered null (median = 0.01, SD = 0.10, threshold = 0.05) -> no warning."""
+        centered_deltas = [
+            -0.08, -0.05, -0.02, 0.00, 0.01, 0.02, 0.04, 0.07, 0.09,
+        ]
+        stats = check_placebo_shift(
+            centered_deltas, threshold_factor=NULL_SHIFT_SD_THRESHOLD
+        )
+        assert stats["is_shifted"] is False
+
+    def test_shifted_null_triggers_warning(self):
+        """Shifted null (median = -0.04, SD = 0.02, threshold = 0.01) -> warning."""
+        shifted_deltas = [
+            -0.07, -0.06, -0.05, -0.04, -0.04, -0.03, -0.02, -0.01,
+        ]
+        stats = check_placebo_shift(
+            shifted_deltas, threshold_factor=NULL_SHIFT_SD_THRESHOLD
+        )
+        assert stats["is_shifted"] is True
+
+    def test_placebo_histogram_builds_on_fixtures(self):
+        """Verify placebo histogram constructs properly from fixture bundle."""
+        bundle = load_results(source="fixtures")
+        assert bundle.placebo_holdout is not None
+
+        fig, stats = build_placebo_histogram(
+            placebo_df=bundle.placebo_holdout,
+            observed_delta=0.01878,
+            split_name="Holdout",
+        )
+        assert fig is not None
+        assert "median" in stats
+        # Fixture placebo holdout has median ≈ -0.038, SD ≈ 0.027 -> is_shifted == True
+        assert stats["is_shifted"] is True
+        # Verify vertical lines for median and observed delta exist in layout shapes
+        shapes = fig.layout.shapes
+        assert any(s.type == "line" and s.x0 == stats["median"] for s in shapes)
+        assert any(s.type == "line" and s.x0 == 0.01878 for s in shapes)
+
+    def test_placebo_histogram_builds_on_real_results(self):
+        """Verify placebo histogram constructs properly on real results if present."""
+        try:
+            bundle = load_results(source="real")
+        except Exception:
+            pytest.skip("Real results not present in environment")
+
+        if bundle.placebo_holdout is None:
+            pytest.skip("placebo_holdout not present in real results")
+
+        fig, stats = build_placebo_histogram(
+            placebo_df=bundle.placebo_holdout,
+            observed_delta=0.01878,
+        )
+        assert fig is not None
+        assert stats["is_shifted"] is True
+

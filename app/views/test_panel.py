@@ -17,7 +17,7 @@ Design-system state mapping (binding, from D7.1 spec):
 import streamlit as st
 
 from app.data import format_ci, format_epa, format_int, get_results_bundle
-from app.ui.charts import build_decile_gap_chart
+from app.ui.charts import build_decile_gap_chart, build_placebo_histogram
 from app.ui.components import (
     caveat_callout,
     empty_state,
@@ -258,7 +258,67 @@ def render() -> None:
     st.divider()
 
     # ------------------------------------------------------------------
-    # 6. Power callout (from power.json — not hardcoded)
+    # 6. Placebo Histogram (Deliverable D7.3)
+    # ------------------------------------------------------------------
+    st.subheader("Placebo Check: Permutation Null Distribution")
+
+    placebo_holdout_df = load_res.bundle.placebo_holdout
+    if placebo_holdout_df is not None and not placebo_holdout_df.empty:
+        fig_placebo, shift_stats = build_placebo_histogram(
+            placebo_df=placebo_holdout_df,
+            observed_delta=sb.delta,
+            split_name="Holdout (2024–2025)",
+        )
+        st.plotly_chart(fig_placebo, use_container_width=True)
+
+        # One-sentence "how to read this" caption
+        st.caption(
+            "The histogram shows what the estimate looks like when the link "
+            "between the situation and the play call is scrambled."
+        )
+
+        # Data-driven warning note if null median differs from 0 by > 0.5 * SD
+        if shift_stats["is_shifted"]:
+            caveat_callout(
+                f"The placebo null distribution is not centered near zero "
+                f"(null median = {format_epa(shift_stats['median'])}, "
+                f"SD = {shift_stats['sd']:.4f}). "
+                "Because the median differs from zero by more than half its "
+                "standard deviation, comparing the observed value to this range "
+                "should be read with care.",
+                kind="warning",
+            )
+
+        # Context on conditions: placebo is C3, but verdict failed on another condition
+        failed_list = v.failed
+        if "c3_outside_placebo" not in failed_list:
+            if failed_list:
+                failed_str = ", ".join(
+                    _CONDITION_LABELS.get(k, k) for k in failed_list
+                )
+                st.info(
+                    f"This placebo check satisfies Pre-Declared Condition 3 "
+                    f"(the observed estimate lies outside the null 2.5–97.5% range). "
+                    f"The overall confirmatory verdict is inconclusive because a "
+                    f"different condition was not met: {failed_str}."
+                )
+            else:
+                st.info(
+                    "This placebo check satisfies Pre-Declared Condition 3 "
+                    "(the observed estimate lies outside the null 2.5–97.5% range)."
+                )
+        else:
+            st.info(
+                "The observed estimate falls within the placebo null range, "
+                "failing Pre-Declared Condition 3."
+            )
+    else:
+        empty_state("Holdout placebo permutation data is unavailable.")
+
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # 7. Power callout (from power.json — not hardcoded)
     # ------------------------------------------------------------------
     power = load_res.bundle.power
     smallest_delta = power.smallest_delta_80_power_formula
@@ -274,7 +334,7 @@ def render() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 7. Pre-declaration link (plan_commit from primary.json)
+    # 8. Pre-declaration link (plan_commit from primary.json)
     # ------------------------------------------------------------------
     plan_commit = prim.plan_commit
     repo_url = f"{_REPO_BASE}/{plan_commit}"
