@@ -10,8 +10,11 @@ from typing import Any
 RAW_DATA_DIR: Path = Path("data/raw")
 CACHE_DIR: Path = Path("data/cache")
 RESULTS_DIR: Path = Path("results")
+MODELS_DIR: Path = RESULTS_DIR / "models"
 HOLDOUT_ACCESS_LOG: Path = Path("results/HOLDOUT_ACCESS.log")
 HOLDOUT_ENV_VAR: str = "TENDENCY_ALLOW_HOLDOUT"
+FROZEN_MODEL_PATH: Path = MODELS_DIR / "phat_model_2016_2023.joblib"
+FROZEN_MODEL_META_PATH: Path = MODELS_DIR / "phat_model_2016_2023.json"
 
 # Columns to load across project
 USECOLS: list[str] = [
@@ -110,3 +113,21 @@ ZONE_NAMES: tuple[str, ...] = ("red_zone", "midfield", "backed_up")
 
 # TODO: Human Decision (2) - Minimum plays per cell
 MIN_PLAYS_PER_CELL: Any = None
+
+# Model Hyperparameters (selected via log loss on tune split)
+MODEL_PARAMS: dict[str, Any] = {
+    "max_depth": 5,
+    "learning_rate": 0.1,
+    "l2_regularization": 1.0,
+    "max_iter": 100,
+}
+
+# Forbidden columns that must never be used as model features
+FORBIDDEN_FEATURES: tuple[str, ...] = (
+    "epa",
+    "xpass",
+    "success",
+    "wp",
+    "shotgun",
+    "no_huddle",
+)

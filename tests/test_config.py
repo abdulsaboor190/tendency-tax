@@ -2,9 +2,11 @@
 
 from src.config import (
     FEATURES,
+    FORBIDDEN_FEATURES,
     LEAN_PASS_THRESHOLD,
     LEAN_RUN_THRESHOLD,
     MIN_PLAYS_PER_CELL,
+    MODEL_PARAMS,
     SEASONS,
     SPLITS,
     USECOLS,
@@ -59,3 +61,20 @@ def test_usecols():
     assert "epa" in USECOLS
     assert "no_play" not in USECOLS
     assert "qb_dropback" in USECOLS
+
+
+def test_model_params_and_forbidden_features():
+    """Verify MODEL_PARAMS and FORBIDDEN_FEATURES configuration."""
+    assert isinstance(MODEL_PARAMS, dict)
+    assert "max_depth" in MODEL_PARAMS
+    assert "learning_rate" in MODEL_PARAMS
+    assert "l2_regularization" in MODEL_PARAMS
+    assert "max_iter" in MODEL_PARAMS
+    assert 3 <= MODEL_PARAMS["max_depth"] <= 5
+
+    assert "epa" in FORBIDDEN_FEATURES
+    assert "xpass" in FORBIDDEN_FEATURES
+    assert "success" in FORBIDDEN_FEATURES
+    assert "wp" in FORBIDDEN_FEATURES
+    assert "shotgun" in FORBIDDEN_FEATURES
+    assert "no_huddle" in FORBIDDEN_FEATURES
