@@ -1,7 +1,8 @@
 """Regression specifications A and B for Tendency Tax estimation.
 
-Implements fast OLS estimation on numpy arrays (fit_arrays) and
-DataFrame wrapper (fit_spec).
+Implements fast OLS estimation on numpy arrays (fit_arrays),
+DataFrame wrapper (fit_spec), and game-clustered bootstrap (cluster_bootstrap).
+
 Outcome: epa.
 Call: call_pass (1 = pass call).
 Phat: pre-snap pass probability.
@@ -18,8 +19,11 @@ Estimands:
 
 from typing import Any, NamedTuple
 
+import joblib
 import numpy as np
 import pandas as pd
+
+from src import config
 
 
 class SpecResult(NamedTuple):
@@ -35,16 +39,31 @@ class SpecResult(NamedTuple):
     r2: float | None = None
 
 
+class BootstrapResult(NamedTuple):
+    spec: str
+    n_boot: int
+    delta: float
+    delta_run: float
+    delta_pass: float
+    delta_boot: np.ndarray
+    delta_run_boot: np.ndarray
+    delta_pass_boot: np.ndarray
+    ci_delta: tuple[float, float]
+    ci_delta_run: tuple[float, float]
+    ci_delta_pass: tuple[float, float]
+    se_delta: float
+    p_value_delta: float
+
+
 def _demean_by_group(
     x: np.ndarray, group_codes: np.ndarray, n_groups: int
 ) -> np.ndarray:
     """Fast within-group demeaning using np.bincount."""
     counts = np.bincount(group_codes, minlength=n_groups)
-    if np.any(counts == 0):
-        # Handle empty groups if any
-        counts = np.maximum(counts, 1)
+    # Handle empty groups if any
+    counts_safe = np.where(counts == 0, 1, counts)
     sums = np.bincount(group_codes, weights=x, minlength=n_groups)
-    means = sums / counts
+    means = sums / counts_safe
     return x - means[group_codes]
 
 
@@ -205,11 +224,174 @@ def fit_spec(df: pd.DataFrame, spec: str = "B") -> SpecResult:
     return fit_arrays(epa=epa, call=call, phat=phat, groups=groups, spec=spec_clean)
 
 
+def _bootstrap_worker(
+    seed: np.random.SeedSequence,
+    n_games: int,
+    game_row_indices: tuple[np.ndarray, ...],
+    epa: np.ndarray,
+    call: np.ndarray,
+    phat: np.ndarray,
+    groups: np.ndarray | None,
+    spec: str,
+) -> tuple[float, float, float]:
+    """Single bootstrap replicate worker function.
+
+    Resamples game indices with replacement, stacks rows, and fits regression.
+    """
+    rng = np.random.default_rng(seed)
+    sampled_game_idx = rng.integers(0, n_games, size=n_games)
+    sampled_row_indices = np.concatenate(
+        [game_row_indices[i] for i in sampled_game_idx]
+    )
+
+    b_epa = epa[sampled_row_indices]
+    b_call = call[sampled_row_indices]
+    b_phat = phat[sampled_row_indices]
+    b_groups = groups[sampled_row_indices] if groups is not None else None
+
+    res = fit_arrays(
+        epa=b_epa,
+        call=b_call,
+        phat=b_phat,
+        groups=b_groups,
+        spec=spec,
+    )
+    return res.delta, res.delta_run, res.delta_pass
+
+
+def cluster_bootstrap(
+    df: pd.DataFrame,
+    spec: str = "B",
+    n_boot: int = config.BOOTSTRAP_REPS,
+    n_jobs: int = -1,
+    seed: int = config.RANDOM_SEED,
+) -> BootstrapResult:
+    """Game-clustered bootstrap for regression specifications A and B.
+
+    Clustering on game_id. Resamples whole games with replacement,
+    precomputing per-game row index arrays for speed.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing game_id, epa, call_pass, phat, and dd_bucket (if Spec B).
+    spec : str
+        "A" or "B"
+    n_boot : int
+        Number of bootstrap replications.
+    n_jobs : int
+        Number of parallel workers for joblib.
+    seed : int
+        Root seed for SeedSequence spawn.
+
+    Returns
+    -------
+    BootstrapResult
+    """
+    for col in ["game_id", "epa", "call_pass", "phat"]:
+        if col not in df.columns:
+            raise KeyError(f"Required column '{col}' missing from DataFrame.")
+
+    spec_clean = spec.strip().upper()
+    if spec_clean == "B" and "dd_bucket" not in df.columns:
+        raise KeyError("Required column 'dd_bucket' missing from DataFrame for Spec B.")
+
+    # 1. Point estimate on full data
+    point_res = fit_spec(df, spec=spec_clean)
+
+    # 2. Extract numpy arrays
+    epa = df["epa"].to_numpy(dtype=np.float64)
+    call = df["call_pass"].to_numpy(dtype=np.float64)
+    phat = df["phat"].to_numpy(dtype=np.float64)
+    groups = df["dd_bucket"].to_numpy() if spec_clean == "B" else None
+
+    # 3. Precompute per-game row indices
+    # Group row indices by unique game_id
+    game_ids = df["game_id"].to_numpy()
+    unique_games, game_inv = np.unique(game_ids, return_inverse=True)
+    n_games = len(unique_games)
+
+    order = np.argsort(game_inv)
+    sorted_inv = game_inv[order]
+    splits = np.flatnonzero(np.diff(sorted_inv)) + 1
+    grouped_row_indices = np.split(order, splits)
+    game_row_indices: tuple[np.ndarray, ...] = tuple(grouped_row_indices)
+
+    # 4. Deterministic RNG stream per replicate
+    root_seq = np.random.SeedSequence(seed)
+    child_seeds = root_seq.spawn(n_boot)
+
+    # 5. Parallel execution with joblib
+    replicates = joblib.Parallel(n_jobs=n_jobs)(
+        joblib.delayed(_bootstrap_worker)(
+            child_seeds[b],
+            n_games,
+            game_row_indices,
+            epa,
+            call,
+            phat,
+            groups,
+            spec_clean,
+        )
+        for b in range(n_boot)
+    )
+
+    deltas = np.array([r[0] for r in replicates], dtype=np.float64)
+    delta_runs = np.array([r[1] for r in replicates], dtype=np.float64)
+    delta_passes = np.array([r[2] for r in replicates], dtype=np.float64)
+
+    # Percentile 95% CIs [2.5, 97.5]
+    ci_delta = (
+        float(np.percentile(deltas, 2.5)),
+        float(np.percentile(deltas, 97.5)),
+    )
+    ci_delta_run = (
+        float(np.percentile(delta_runs, 2.5)),
+        float(np.percentile(delta_runs, 97.5)),
+    )
+    ci_delta_pass = (
+        float(np.percentile(delta_passes, 2.5)),
+        float(np.percentile(delta_passes, 97.5)),
+    )
+
+    # Bootstrap SE for delta
+    se_delta = float(np.std(deltas, ddof=1))
+
+    # Two-sided p-value for delta:
+    # min(1, 2 * min((1 + #(b <= 0)) / (B + 1), (1 + #(b >= 0)) / (B + 1)))
+    n_le_zero = np.sum(deltas <= 0)
+    n_ge_zero = np.sum(deltas >= 0)
+    p_val = float(
+        min(
+            1.0,
+            2.0 * min((1 + n_le_zero) / (n_boot + 1), (1 + n_ge_zero) / (n_boot + 1)),
+        )
+    )
+
+    return BootstrapResult(
+        spec=spec_clean,
+        n_boot=n_boot,
+        delta=point_res.delta,
+        delta_run=point_res.delta_run,
+        delta_pass=point_res.delta_pass,
+        delta_boot=deltas,
+        delta_run_boot=delta_runs,
+        delta_pass_boot=delta_passes,
+        ci_delta=ci_delta,
+        ci_delta_run=ci_delta_run,
+        ci_delta_pass=ci_delta_pass,
+        se_delta=se_delta,
+        p_value_delta=p_val,
+    )
+
+
 def run_pipeline() -> dict[str, Any]:
     """Fit Specs A and B on Early and Tune splits and print summary.
 
     Does not touch holdout data.
     """
+    import time
+
     from src.load import get_split
     from src.model import add_phat
 
@@ -239,6 +421,34 @@ def run_pipeline() -> dict[str, Any]:
                 f"delta_run={res.delta_run:+.4f}, "
                 f"delta_pass={res.delta_pass:+.4f}"
             )
+
+    print("\n" + "=" * 60)
+    print("TIMING BENCHMARK: CLUSTERED BOOTSTRAP ON TUNE SPLIT")
+    print("=" * 60)
+    t0 = time.perf_counter()
+    n_bench = 100
+    boot_tune = cluster_bootstrap(tune_df, spec="B", n_boot=n_bench, n_jobs=-1)
+    elapsed = time.perf_counter() - t0
+    per_rep = elapsed / n_bench
+    proj_tune_1000 = per_rep * 1000
+    # Early has ~143k plays (~1580 games) vs tune ~50k plays (~543 games), roughly 2.9x
+    proj_early_1000 = proj_tune_1000 * (len(early_df) / len(tune_df))
+
+    print(f"Tune bootstrap ({n_bench} reps, n_jobs=-1): {elapsed:.2f}s")
+    print(f"Per-replicate time (tune): {per_rep * 1000:.2f} ms")
+    print(
+        f"Projected 1,000 reps on tune: {proj_tune_1000:.2f}s "
+        f"({proj_tune_1000/60:.2f} min)"
+    )
+    print(
+        f"Projected 1,000 reps on early: {proj_early_1000:.2f}s "
+        f"({proj_early_1000/60:.2f} min)"
+    )
+    print(
+        f"Tune Spec B Delta: {boot_tune.delta:+.4f}, "
+        f"95% CI [{boot_tune.ci_delta[0]:+.4f}, {boot_tune.ci_delta[1]:+.4f}], "
+        f"SE: {boot_tune.se_delta:.4f}, p: {boot_tune.p_value_delta:.4f}"
+    )
 
     return results
 
