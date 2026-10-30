@@ -6,7 +6,16 @@ import pandas as pd
 import pytest
 
 from src import config
-from src.load import get_split, split_counts
+from src.load import find_season_file, get_split, split_counts
+
+
+def _has_raw_data() -> bool:
+    """Check if raw data is available in data/raw/."""
+    try:
+        find_season_file(2016)
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def test_holdout_raises_by_default(monkeypatch: pytest.MonkeyPatch):
@@ -34,6 +43,8 @@ def test_holdout_works_with_both_conditions_and_logs(
     tmp_path: Path,
 ):
     """Verify holdout returns data when both conditions are met, and logs access."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     monkeypatch.setenv(config.HOLDOUT_ENV_VAR, "1")
     monkeypatch.setattr("src.load._is_plan_committed", lambda: True)
 
@@ -54,6 +65,8 @@ def test_holdout_works_with_both_conditions_and_logs(
 
 def test_split_counts_has_no_outcome_columns():
     """Verify split_counts output has no outcome columns (epa, success, etc.)."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     counts_df = split_counts()
     assert isinstance(counts_df, pd.DataFrame)
 
@@ -66,6 +79,8 @@ def test_split_counts_has_no_outcome_columns():
 
 def test_early_and_tune_work_without_env_var(monkeypatch: pytest.MonkeyPatch):
     """Verify early and tune splits work without the holdout env var."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     monkeypatch.delenv(config.HOLDOUT_ENV_VAR, raising=False)
 
     df_early = get_split("early")
@@ -86,6 +101,8 @@ def test_invalid_split_name_raises_value_error():
 
 def test_split_counts_exact_real_numbers():
     """Verify real data holdout and early/tune numbers in split_counts()."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     df = split_counts()
     rows = df.set_index("split").to_dict(orient="index")
 

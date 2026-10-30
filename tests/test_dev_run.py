@@ -3,13 +3,26 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from scripts.run_all import run_dev_pipeline
 from src import config
-from src.load import get_split
+from src.load import find_season_file, get_split
+
+
+def _has_raw_data() -> bool:
+    """Check if raw data is available in data/raw/."""
+    try:
+        find_season_file(2016)
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def test_dev_stage_hard_safety_never_calls_holdout():
     """Verify that dev stage NEVER requests the holdout split."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     original_get_split = get_split
 
     def guarded_get_split(name):
@@ -29,6 +42,8 @@ def test_dev_stage_hard_safety_never_calls_holdout():
 
 def test_holdout_access_log_untouched():
     """Verify that HOLDOUT_ACCESS.log does not exist or remains completely untouched."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     log_path = config.HOLDOUT_ACCESS_LOG
     if log_path.exists():
         initial_content = log_path.read_text(encoding="utf-8")

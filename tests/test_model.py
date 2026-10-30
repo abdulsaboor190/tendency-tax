@@ -9,7 +9,7 @@ import pytest
 from sklearn.metrics import brier_score_loss, log_loss
 
 from src import config
-from src.load import get_split
+from src.load import find_season_file, get_split
 from src.model import (
     add_phat,
     baseline_phat,
@@ -19,15 +19,28 @@ from src.model import (
 )
 
 
+def _has_raw_data() -> bool:
+    """Check if raw data is available in data/raw/."""
+    try:
+        find_season_file(2016)
+        return True
+    except FileNotFoundError:
+        return False
+
+
 @pytest.fixture(scope="module")
 def early_data() -> pd.DataFrame:
     """Fixture providing early split data."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     return get_split("early")
 
 
 @pytest.fixture(scope="module")
 def tune_data() -> pd.DataFrame:
     """Fixture providing tune split data."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     return get_split("tune")
 
 
@@ -124,6 +137,8 @@ def test_no_leakage_early_2018(early_data: pd.DataFrame):
 
 def test_holdout_not_scored_in_add_phat():
     """Verify that holdout seasons are NOT scored by add_phat (remain NaN)."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     # Create mock dataframe with holdout seasons
     mock_df = pd.DataFrame(
         {

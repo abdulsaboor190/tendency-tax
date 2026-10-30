@@ -13,6 +13,16 @@ import pytest
 
 from scripts.run_all import run_confirm_pipeline
 from src import config
+from src.load import find_season_file
+
+
+def _has_raw_data() -> bool:
+    """Check if raw data is available for pipeline execution."""
+    try:
+        find_season_file(2016)
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def _make_mock_holdout_split(n_games=30, plays_per_game=25, seed=123):
@@ -117,6 +127,8 @@ def test_confirm_refuses_when_interactive_confirmation_aborted(tmp_path, monkeyp
 
 def test_confirm_execution_on_synthetic_data(monkeypatch, tmp_path):
     """Test full execution on synthetic mock holdout data."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     monkeypatch.setenv(config.HOLDOUT_ENV_VAR, "1")
 
     mock_holdout = _make_mock_holdout_split(n_games=15, plays_per_game=20, seed=42)

@@ -6,7 +6,16 @@ import pandas as pd
 import pytest
 
 from src import config
-from src.load import prepare, verify_early_tune_counts
+from src.load import find_season_file, prepare, verify_early_tune_counts
+
+
+def _has_raw_data() -> bool:
+    """Check if raw data is available in data/raw/."""
+    try:
+        find_season_file(2016)
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def _make_valid_row(**overrides: Any) -> dict[str, Any]:
@@ -195,6 +204,8 @@ def test_zone_cut_points_none_raises_value_error(monkeypatch: pytest.MonkeyPatch
 
 def test_verify_early_tune_counts_matches_exact_numbers():
     """Verify real data play and game counts match exact specification numbers."""
+    if not _has_raw_data():
+        pytest.skip("Raw play-by-play data not present in data/raw/")
     counts = verify_early_tune_counts()
 
     expected_per_season = {
