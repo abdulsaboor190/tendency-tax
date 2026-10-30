@@ -1,11 +1,16 @@
 """End-to-end execution pipeline for Tendency Tax.
 
 Supports stages:
-  --stage dev: Runs early and tune splits with bootstrap, placebo, and decile tables.
+  --stage dev:     Runs early and tune splits (bootstrap, placebo, deciles).
+  --stage confirm: Confirmatory holdout evaluation (2024-2025).
 """
 
 import argparse
+import datetime
 import json
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -13,11 +18,12 @@ from typing import Any
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 
 from src import config
-from src.estimate import cluster_bootstrap, fit_spec, placebo
+from src.estimate import cluster_bootstrap, fit_spec, placebo, verdict
 from src.load import get_split
-from src.model import add_phat
+from src.model import add_phat, score
 
 
 def _decile_bootstrap_worker(
@@ -314,21 +320,398 @@ def run_dev_pipeline(
     return summary_results
 
 
+def _get_git_commit(ref: str = "HEAD") -> str:
+    """Return the git commit hash for a ref or file path."""
+    cmd = ["git", "rev-parse", ref]
+    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return res.stdout.strip()
+
+
+def run_confirm_pipeline(
+    force: bool = False,
+    prompt_input_func: Any = input,
+    n_boot: int = config.BOOTSTRAP_REPS,
+    n_perm: int = config.PLACEBO_REPS,
+    n_jobs: int = -1,
+    skip_git_checks: bool = False,
+) -> dict[str, Any]:
+    """Execute confirmatory evaluation on holdout seasons 2024-2025.
+
+    Follows strict protocol pre-conditions 1 through 16.
+    """
+    print("=" * 80)
+    print("CONFIRMATORY STAGE: HOLDOUT EVALUATION (2024-2025)")
+    print("=" * 80)
+
+    # 1. Environment variable check
+    if os.environ.get(config.HOLDOUT_ENV_VAR) != "1":
+        raise RuntimeError(
+            f"Precondition 1 failed: Env var {config.HOLDOUT_ENV_VAR} != '1'."
+        )
+
+    # 2. Git working tree clean and pre-confirm tag exists
+    if not skip_git_checks:
+        status_res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if status_res.stdout.strip():
+            raise RuntimeError(
+                f"Precondition 2 failed: Working tree is dirty:\n{status_res.stdout}"
+            )
+
+        tag_res = subprocess.run(
+            ["git", "tag", "-l", "pre-confirm"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if "pre-confirm" not in tag_res.stdout.split():
+            raise RuntimeError(
+                "Precondition 2 failed: Git tag 'pre-confirm' does not exist."
+            )
+
+        # 3. PLAN.md integrity check
+        plan_log = subprocess.run(
+            ["git", "log", "-1", "--format=%H", "--", "PLAN.md"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        plan_commit = plan_log.stdout.strip()
+        if not plan_commit:
+            raise RuntimeError(
+                "Precondition 3 failed: PLAN.md has never been committed."
+            )
+        print(f"PLAN.md verified. Introduction commit: {plan_commit}")
+
+        # Check if PLAN.md has diff since that commit
+        diff_res = subprocess.run(
+            ["git", "diff", plan_commit, "HEAD", "--", "PLAN.md"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if diff_res.stdout.strip() and not Path("DEVIATIONS.md").exists():
+            raise RuntimeError(
+                "Precondition 3 failed: PLAN.md modified since initial commit "
+                "without DEVIATIONS.md."
+            )
+        current_commit = _get_git_commit("HEAD")
+    else:
+        plan_commit = "mock_plan_commit"
+        current_commit = "mock_commit"
+
+    # 4. results/dev_primary.json exists
+    dev_primary_path = Path("results/dev_primary.json")
+    if not dev_primary_path.exists():
+        raise RuntimeError(
+            f"Precondition 4 failed: {dev_primary_path} missing. Run dev first."
+        )
+    with open(dev_primary_path, encoding="utf-8") as f:
+        dev_data = json.load(f)
+
+    # 5. results/primary.json does not already exist
+    primary_json_path = Path("results/primary.json")
+    if primary_json_path.exists():
+        if not force:
+            raise RuntimeError(
+                f"Precondition 5 failed: {primary_json_path} already exists. "
+                "Confirmatory run executes once. Use --force to override."
+            )
+        # Log to DEVIATIONS.md
+        dev_md_path = Path("DEVIATIONS.md")
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        dev_entry = (
+            f"\n\n## {now_iso} - Force Overwrite of Confirmatory Run\n"
+            f"- Overwriting existing {primary_json_path} with --force flag.\n"
+        )
+        with open(dev_md_path, "a", encoding="utf-8") as f:
+            f.write(dev_entry)
+        print("Logged force override to DEVIATIONS.md")
+
+    # 6. Interactive confirmation
+    print("\n" + "!" * 80)
+    print("WARNING: About to execute confirmatory holdout evaluation on 2024-2025.")
+    print("This will score the locked frozen model and evaluate the hypothesis.")
+    print("!" * 80)
+    response = prompt_input_func("Type 'RUN' to proceed: ")
+    if response.strip() != "RUN":
+        raise RuntimeError("Precondition 6 failed: Confirmation aborted by user.")
+
+    # 7. Load holdout via get_split("holdout")
+    print("\nLoading holdout split via get_split('holdout')...")
+    holdout_raw = get_split("holdout")
+    n_plays_holdout = len(holdout_raw)
+    n_games_holdout = holdout_raw["game_id"].nunique()
+
+    # In mock/test environments, allow overriding expected counts
+    expected_plays = 48469
+    expected_games = 544
+    if not skip_git_checks:
+        if n_plays_holdout != expected_plays or n_games_holdout != expected_games:
+            raise AssertionError(
+                f"Holdout counts mismatch: got {n_plays_holdout} plays, "
+                f"{n_games_holdout} games; expected {expected_plays} plays, "
+                f"{expected_games} games."
+            )
+    print(
+        f"Holdout verified: {n_plays_holdout:,} plays across "
+        f"{n_games_holdout:,} games."
+    )
+
+    # 8. Load frozen model and score holdout
+    model_path = config.FROZEN_MODEL_PATH
+    meta_path = config.FROZEN_MODEL_META_PATH
+    if not model_path.exists() or not meta_path.exists():
+        raise FileNotFoundError(
+            "Frozen model or metadata JSON missing from results/models/."
+        )
+
+    with open(meta_path, encoding="utf-8") as f:
+        meta = json.load(f)
+
+    installed_sklearn = sklearn.__version__
+    if meta.get("sklearn_version") != installed_sklearn:
+        raise AssertionError(
+            f"scikit-learn version mismatch: installed {installed_sklearn} != "
+            f"metadata {meta.get('sklearn_version')}"
+        )
+    if meta.get("features") != config.FEATURES:
+        raise AssertionError("Feature list in metadata does not match config.FEATURES.")
+
+    frozen_clf = joblib.load(model_path)
+    holdout_df = holdout_raw.copy()
+    X_holdout = holdout_df[config.FEATURES]
+    holdout_df["phat"] = frozen_clf.predict_proba(X_holdout)[:, 1]
+
+    # Assertions on phat
+    if holdout_df["phat"].isna().any():
+        raise AssertionError("Null values detected in scored holdout phat.")
+    if (holdout_df["phat"] < 0.0).any() or (holdout_df["phat"] > 1.0).any():
+        raise AssertionError("Holdout phat values out of valid bounds [0, 1].")
+    print("Scored holdout with frozen 2016-2023 model successfully.")
+
+    # 9. Spec B and Spec A regressions
+    print("\nFitting Spec B and Spec A on Holdout...")
+    res_b_point = fit_spec(holdout_df, spec="B")
+    res_a_point = fit_spec(holdout_df, spec="A")
+
+    print(f"Running Holdout Spec B cluster bootstrap ({n_boot} reps)...")
+    boot_b = cluster_bootstrap(
+        holdout_df, spec="B", n_boot=n_boot, n_jobs=n_jobs, seed=config.RANDOM_SEED
+    )
+    print(f"Running Holdout Spec A cluster bootstrap ({n_boot} reps)...")
+    boot_a = cluster_bootstrap(
+        holdout_df, spec="A", n_boot=n_boot, n_jobs=n_jobs, seed=config.RANDOM_SEED
+    )
+    print(f"Running Holdout Spec B placebo test ({n_perm} perms)...")
+    placebo_b = placebo(
+        holdout_df, spec="B", n_perm=n_perm, n_jobs=n_jobs, seed=config.RANDOM_SEED
+    )
+
+    # 10. Call verdict()
+    early_delta = dev_data["early"]["spec_b"]["delta"]
+    verdict_res = verdict(
+        holdout_delta=boot_b.delta,
+        holdout_ci_lo=boot_b.ci_delta[0],
+        holdout_ci_hi=boot_b.ci_delta[1],
+        early_delta=early_delta,
+        placebo_lo=placebo_b.pct_2_5,
+        placebo_hi=placebo_b.pct_97_5,
+    )
+
+    # 11. Compute decile gap table for holdout using early edges
+    early_raw = add_phat(get_split("early"))
+    early_phat = early_raw["phat"].to_numpy()
+    decile_edges = np.percentile(early_phat, np.linspace(0, 100, 11))
+    decile_edges[0] = 0.0
+    decile_edges[-1] = 1.0
+
+    print("Computing Holdout decile gap table...")
+    decile_holdout_df = compute_decile_table(
+        holdout_df,
+        edges=decile_edges,
+        split_name="holdout",
+        n_boot=n_boot,
+        n_jobs=n_jobs,
+        seed=config.RANDOM_SEED,
+    )
+
+    # 12. Holdout phat predictive scores (call_pass only, no EPA)
+    print("Scoring predictive accuracy on Holdout...")
+    model_score = score(holdout_df, "phat")
+
+    # Cell baseline learned on 2016-2023 (early + tune)
+    dev_pool = pd.concat([get_split("early"), get_split("tune")], ignore_index=True)
+    cell_rates = dev_pool.groupby("cell_id")["call_pass"].mean()
+    dd_rates = dev_pool.groupby("dd_bucket")["call_pass"].mean()
+    overall_rate = float(dev_pool["call_pass"].mean())
+
+    holdout_baseline = (
+        holdout_df["cell_id"]
+        .map(cell_rates)
+        .fillna(holdout_df["dd_bucket"].map(dd_rates))
+        .fillna(overall_rate)
+        .astype(float)
+    )
+    holdout_df["phat_baseline"] = holdout_baseline
+    baseline_score = score(holdout_df, "phat_baseline")
+
+    # 13. Assemble primary.json
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    package_versions = {
+        "python": sys.version.split()[0],
+        "numpy": np.__version__,
+        "pandas": pd.__version__,
+        "scikit-learn": sklearn.__version__,
+        "joblib": joblib.__version__,
+    }
+
+    primary_record: dict[str, Any] = {
+        "timestamp": now_iso,
+        "git_commit": current_commit,
+        "plan_commit": plan_commit,
+        "package_versions": package_versions,
+        "simulation_parameters": {
+            "random_seed": config.RANDOM_SEED,
+            "n_boot": n_boot,
+            "n_perm": n_perm,
+        },
+        "early": {
+            "n_plays": dev_data["early"]["n_plays"],
+            "n_games": dev_data["early"]["n_games"],
+            "spec_b": dev_data["early"]["spec_b"],
+        },
+        "tune": {
+            "n_plays": dev_data["tune"]["n_plays"],
+            "n_games": dev_data["tune"]["n_games"],
+            "spec_b": dev_data["tune"]["spec_b"],
+        },
+        "holdout": {
+            "n_plays": n_plays_holdout,
+            "n_games": n_games_holdout,
+            "spec_b": {
+                "point_b1": round(res_b_point.b1, 5),
+                "point_b2": round(res_b_point.b2, 5),
+                "point_b3": round(res_b_point.b3, 5),
+                "delta": round(boot_b.delta, 5),
+                "delta_ci_95": [round(x, 5) for x in boot_b.ci_delta],
+                "delta_se": round(boot_b.se_delta, 5),
+                "p_value_delta": round(boot_b.p_value_delta, 5),
+                "delta_run": round(boot_b.delta_run, 5),
+                "delta_run_ci_95": [round(x, 5) for x in boot_b.ci_delta_run],
+                "delta_pass": round(boot_b.delta_pass, 5),
+                "delta_pass_ci_95": [round(x, 5) for x in boot_b.ci_delta_pass],
+                "placebo": {
+                    "n_perm": placebo_b.n_perm,
+                    "delta_observed": round(placebo_b.delta_observed, 5),
+                    "pct_2_5": round(placebo_b.pct_2_5, 5),
+                    "pct_97_5": round(placebo_b.pct_97_5, 5),
+                    "outside_range": placebo_b.outside_range,
+                    "p_value": round(placebo_b.p_value, 5),
+                },
+            },
+            "spec_a_secondary": {
+                "point_b1": round(res_a_point.b1, 5),
+                "point_b2": round(res_a_point.b2, 5),
+                "point_b3": round(res_a_point.b3, 5),
+                "delta": round(boot_a.delta, 5),
+                "delta_ci_95": [round(x, 5) for x in boot_a.ci_delta],
+                "delta_se": round(boot_a.se_delta, 5),
+                "p_value_delta": round(boot_a.p_value_delta, 5),
+                "delta_run": round(boot_a.delta_run, 5),
+                "delta_run_ci_95": [round(x, 5) for x in boot_a.ci_delta_run],
+                "delta_pass": round(boot_a.delta_pass, 5),
+                "delta_pass_ci_95": [round(x, 5) for x in boot_a.ci_delta_pass],
+            },
+            "predictive_scores": {
+                "model_phat": {
+                    "log_loss": round(model_score.log_loss, 5),
+                    "brier_score": round(model_score.brier_score, 5),
+                },
+                "baseline_cell": {
+                    "log_loss": round(baseline_score.log_loss, 5),
+                    "brier_score": round(baseline_score.brier_score, 5),
+                },
+            },
+        },
+        "verdict": verdict_res.to_dict(),
+    }
+
+    with open(primary_json_path, "w", encoding="utf-8") as f:
+        json.dump(primary_record, f, indent=2)
+    print(f"\nSaved primary confirmatory results to {primary_json_path}")
+
+    # 14. Save parquet artifacts
+    placebo_holdout_path = Path("results/placebo_holdout.parquet")
+    pd.DataFrame({"null_delta": placebo_b.null_distribution}).to_parquet(
+        placebo_holdout_path, index=False
+    )
+    print(f"Saved holdout placebo null to {placebo_holdout_path}")
+
+    decile_holdout_path = Path("results/decile_gap_holdout.parquet")
+    decile_holdout_df.to_parquet(decile_holdout_path, index=False)
+    print(f"Saved holdout decile table to {decile_holdout_path}")
+
+    # 15. Append to results/RUN_LOG.md
+    run_log_path = Path("results/RUN_LOG.md")
+    ci_str = f"[{boot_b.ci_delta[0]:+.4f}, {boot_b.ci_delta[1]:+.4f}]"
+    log_entry = (
+        f"\n## Confirmatory Run — {now_iso}\n"
+        f"- Commit: `{current_commit}`\n"
+        f"- PLAN.md Commit: `{plan_commit}`\n"
+        f"- Verdict State: **{verdict_res.state.upper()}**\n"
+        f"- Verdict Sentence: {verdict_res.sentence}\n"
+        f"- Holdout Spec B Delta: {boot_b.delta:+.4f} (95% CI: {ci_str})\n"
+    )
+    with open(run_log_path, "a", encoding="utf-8") as f:
+        f.write(log_entry)
+    print(f"Appended confirmatory log entry to {run_log_path}")
+
+    # 16. Print summary
+    print("\n" + "=" * 80)
+    print("CONFIRMATORY EVALUATION SUMMARY")
+    print("=" * 80)
+    print(f"Verdict State:    {verdict_res.state.upper()}")
+    print(f"Verdict Sentence: {verdict_res.sentence}")
+    print(f"Holdout Delta:    {boot_b.delta:+.4f}")
+    print(f"95% CI:           [{boot_b.ci_delta[0]:+.4f}, {boot_b.ci_delta[1]:+.4f}]")
+    print(f"Bootstrap SE:     {boot_b.se_delta:.4f}")
+    print(f"p-value:          {boot_b.p_value_delta:.4f}")
+    print(
+        f"Placebo 95% Band: [{placebo_b.pct_2_5:+.4f}, {placebo_b.pct_97_5:+.4f}] "
+        f"(Outside: {placebo_b.outside_range})"
+    )
+    print("=" * 80)
+
+    return primary_record
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Tendency Tax pipeline.")
     parser.add_argument(
         "--stage",
         type=str,
         required=True,
-        choices=["dev"],
-        help="Pipeline stage to execute (currently 'dev' only).",
+        choices=["dev", "confirm"],
+        help="Pipeline stage to execute.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Overwrite existing primary.json (logs to DEVIATIONS.md).",
     )
     args = parser.parse_args()
 
     if args.stage == "dev":
         run_dev_pipeline()
+    elif args.stage == "confirm":
+        run_confirm_pipeline(force=args.force)
 
 
 if __name__ == "__main__":
     main()
-

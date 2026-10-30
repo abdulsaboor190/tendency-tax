@@ -20,7 +20,7 @@ dev-run:
 	uv run python -m scripts.run_all --stage dev
 
 confirm:
-	@echo confirm target is a stub
+	uv run python -m scripts.run_all --stage confirm
 
 app:
 	@echo app target is a stub
