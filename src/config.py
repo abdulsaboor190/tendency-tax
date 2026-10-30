@@ -15,6 +15,9 @@ HOLDOUT_ACCESS_LOG: Path = Path("results/HOLDOUT_ACCESS.log")
 HOLDOUT_ENV_VAR: str = "TENDENCY_ALLOW_HOLDOUT"
 FROZEN_MODEL_PATH: Path = MODELS_DIR / "phat_model_2016_2023.joblib"
 FROZEN_MODEL_META_PATH: Path = MODELS_DIR / "phat_model_2016_2023.json"
+MODEL_SCORES_PATH: Path = RESULTS_DIR / "model_scores.json"
+CALIBRATION_EARLY_PATH: Path = RESULTS_DIR / "calibration_early.parquet"
+CALIBRATION_TUNE_PATH: Path = RESULTS_DIR / "calibration_tune.parquet"
 
 # Columns to load across project
 USECOLS: list[str] = [

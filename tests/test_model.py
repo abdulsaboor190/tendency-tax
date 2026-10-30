@@ -6,13 +6,16 @@ import joblib
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.metrics import brier_score_loss, log_loss
 
 from src import config
 from src.load import get_split
 from src.model import (
     add_phat,
+    baseline_phat,
     fit_early_oof_models,
     fit_model,
+    score,
 )
 
 
@@ -167,3 +170,132 @@ def test_frozen_final_model_and_metadata():
     model = joblib.load(config.FROZEN_MODEL_PATH)
     assert hasattr(model, "predict_proba")
     assert model.n_features_in_ == len(config.FEATURES)
+
+
+def test_baseline_fallback_works_for_missing_cell():
+    """Verify baseline_phat falls back to dd_bucket pass rate when a cell is missing."""
+    # Training pool with 2 seasons so leave-one-season-out works
+    train_pool = pd.DataFrame(
+        {
+            "season": [2016, 2016, 2017, 2017],
+            "cell_id": [
+                "1_short_red_zone",
+                "1_short_midfield",
+                "1_short_red_zone",
+                "1_short_midfield",
+            ],
+            "dd_bucket": ["1_short", "1_short", "1_short", "1_short"],
+            "call_pass": [1, 0, 1, 0],  # dd_bucket rate = 0.5
+        }
+    )
+
+    # Test frame containing 1_short_backed_up (missing from training data!)
+    test_df = pd.DataFrame(
+        {
+            "season": [2016, 2022],  # one early row, one tune row
+            "cell_id": ["1_short_backed_up", "1_short_backed_up"],
+            "dd_bucket": ["1_short", "1_short"],
+            "call_pass": [1, 0],
+        }
+    )
+
+    scored = baseline_phat(test_df, early_df=train_pool)
+    assert "phat_baseline" in scored.columns
+    assert "baseline_phat" in scored.columns
+
+    # Both early and tune rows for the missing cell should fall back to 0.5
+    assert scored.loc[0, "phat_baseline"] == pytest.approx(0.5)
+    assert scored.loc[1, "phat_baseline"] == pytest.approx(0.5)
+
+
+def test_score_matches_sklearn_on_tiny_example():
+    """Verify score() matches sklearn log_loss and brier_score_loss."""
+    df = pd.DataFrame(
+        {
+            "call_pass": [1, 0, 1, 1, 0, 0, 1, 0, 1, 0],
+            "p": [0.9, 0.1, 0.8, 0.7, 0.3, 0.2, 0.65, 0.4, 0.85, 0.15],
+        }
+    )
+
+    res = score(df, "p")
+
+    # Direct sklearn calculation
+    y_true = df["call_pass"].values
+    p_clipped = np.clip(df["p"].values, 1e-6, 1.0 - 1e-6)
+    expected_ll = float(log_loss(y_true, p_clipped))
+    expected_bs = float(brier_score_loss(y_true, df["p"].values))
+
+    assert res.log_loss == pytest.approx(expected_ll, abs=1e-7)
+    assert res.brier_score == pytest.approx(expected_bs, abs=1e-7)
+    # Check tuple unpacking compatibility
+    ll_val, bs_val, calib_tbl = score(df, "p")
+    assert ll_val == res.log_loss
+    assert bs_val == res.brier_score
+
+
+def test_calibration_bins_sum_to_full_row_count():
+    """Verify calibration bins sum to the exact row count of the input dataframe."""
+    np.random.seed(config.RANDOM_SEED)
+    n_rows = 1234
+    df = pd.DataFrame(
+        {
+            "call_pass": np.random.randint(0, 2, n_rows),
+            "pred_prob": np.random.uniform(0.05, 0.95, n_rows),
+        }
+    )
+
+    res = score(df, "pred_prob")
+    calib = res.calibration
+
+    assert len(calib) == 10, "Expected exactly 10 calibration bins!"
+    assert calib["n"].sum() == n_rows, (
+        f"Calibration bin counts sum ({calib['n'].sum()}) != total rows ({n_rows})"
+    )
+    assert (calib["mean_pred"] >= 0.0).all()
+    assert (calib["mean_pred"] <= 1.0).all()
+
+
+def test_model_scores_file_and_gate_g1():
+    """Verify results/model_scores.json exists and confirms GATE G1 passes."""
+    assert config.MODEL_SCORES_PATH.exists(), (
+        f"Missing {config.MODEL_SCORES_PATH}"
+    )
+
+    with open(config.MODEL_SCORES_PATH, "r", encoding="utf-8") as f:
+        scores = json.load(f)
+
+    assert len(scores) == 6
+    tune_scores = {s["predictor"]: s for s in scores if s["split"] == "tune"}
+
+    # GATE G1 check: model log loss must beat baseline log loss on tune split
+    model_tune_ll = tune_scores["model"]["log_loss"]
+    base_tune_ll = tune_scores["baseline"]["log_loss"]
+
+    assert model_tune_ll < base_tune_ll, (
+        f"GATE G1 FAILED: Model log loss ({model_tune_ll}) is not lower than "
+        f"baseline log loss ({base_tune_ll}) on TUNE split!"
+    )
+
+
+def test_calibration_parquet_files():
+    """Verify calibration parquet files exist and have valid structure."""
+    assert config.CALIBRATION_EARLY_PATH.exists()
+    assert config.CALIBRATION_TUNE_PATH.exists()
+
+    df_early = pd.read_parquet(config.CALIBRATION_EARLY_PATH)
+    assert len(df_early) == 30  # 3 predictors x 10 bins
+    expected_cols = [
+        "split",
+        "predictor",
+        "bin",
+        "mean_pred",
+        "observed_pass_rate",
+        "n",
+    ]
+    assert list(df_early.columns) == expected_cols
+    assert set(df_early["predictor"].unique()) == {"model", "baseline", "xpass"}
+
+    df_tune = pd.read_parquet(config.CALIBRATION_TUNE_PATH)
+    assert len(df_tune) == 30
+    assert list(df_tune.columns) == expected_cols
+    assert set(df_tune["predictor"].unique()) == {"model", "baseline", "xpass"}
