@@ -1,7 +1,10 @@
-.PHONY: setup data test dev-run confirm app diagnostics power secondary
+.PHONY: setup data test dev-run confirm app diagnostics power secondary download
 
 setup:
 	uv sync
+
+download:
+	uv run python -m scripts.download_data
 
 data:
 	uv run python -m src.load
@@ -26,4 +29,4 @@ confirm:
 	uv run python -m scripts.run_all --stage confirm
 
 app:
-	uv run streamlit run app/app.py
+	uv run python -m streamlit run app/app.py

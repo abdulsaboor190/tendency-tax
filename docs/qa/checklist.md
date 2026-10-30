@@ -41,3 +41,4 @@ Because headless browser engines (Playwright/Selenium) are not installed in the 
    - Test panel: `http://localhost:8501/`
    - Situation explorer: `http://localhost:8501/?down=3&dist=short&zone=red_zone&split=tune`
    - Team scout: `http://localhost:8501/?split=tune&season=2023&team=KC`
+

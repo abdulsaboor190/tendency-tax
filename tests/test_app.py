@@ -112,3 +112,29 @@ def test_app_isolation_preserved():
                 assert not pat.search(line), (
                     f"Forbidden pattern {pat.pattern} found in {p}: {line}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# 5. App Pages Smoke Test
+# ---------------------------------------------------------------------------
+
+def test_app_pages_run_without_exception():
+    """Verify that every view page runs cleanly without uncaught exceptions."""
+    from streamlit.testing.v1 import AppTest
+
+    repo_root = Path(__file__).resolve().parent.parent
+    at = AppTest.from_file(str(repo_root / "app" / "app.py"), default_timeout=30)
+    at.run()
+    assert not at.exception, f"Exception on app.py: {at.exception}"
+
+    # Verify each page file directly
+    for page_rel in [
+        "app/views/situation_explorer.py",
+        "app/views/team_scout.py",
+        "app/views/about_method.py",
+    ]:
+        at_page = AppTest.from_file(str(repo_root / page_rel), default_timeout=30)
+        at_page.run()
+        assert not at_page.exception, f"Exception on {page_rel}: {at_page.exception}"
+
+
