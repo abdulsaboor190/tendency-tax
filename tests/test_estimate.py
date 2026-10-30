@@ -1,4 +1,4 @@
-"""Tests for regression specifications A and B and game-clustered bootstrap."""
+"""Tests for regression specifications A and B, bootstrap, and placebo."""
 
 import numpy as np
 import pandas as pd
@@ -7,10 +7,12 @@ import statsmodels.formula.api as smf
 
 from src.estimate import (
     BootstrapResult,
+    PlaceboResult,
     SpecResult,
     cluster_bootstrap,
     fit_arrays,
     fit_spec,
+    placebo,
 )
 
 
@@ -160,7 +162,13 @@ def test_spec_result_namedtuple_fields():
 
 
 def _create_synthetic_cluster_data(
-    n_games=100, plays_per_game=50, b1=0.1, b2=0.05, b3=-0.2, seed=42
+    n_games=100,
+    plays_per_game=50,
+    b1=0.1,
+    b2=0.05,
+    b3=-0.2,
+    seed=42,
+    seasons=(2022, 2023),
 ):
     """Helper to generate synthetic clustered data."""
     rng = np.random.default_rng(seed)
@@ -168,6 +176,7 @@ def _create_synthetic_cluster_data(
     game_ids = np.repeat([f"game_{i:03d}" for i in range(n_games)], plays_per_game)
     game_effects = {f"game_{i:03d}": rng.normal(0, 0.1) for i in range(n_games)}
 
+    season_col = rng.choice(seasons, size=n_total)
     call = rng.binomial(1, 0.55, size=n_total).astype(float)
     phat = rng.uniform(0.15, 0.85, size=n_total)
     buckets = ["1_short", "1_med", "1_long", "2_med", "3_med"]
@@ -180,6 +189,7 @@ def _create_synthetic_cluster_data(
 
     return pd.DataFrame({
         "game_id": game_ids,
+        "season": season_col,
         "epa": epa,
         "call_pass": call,
         "phat": phat,
@@ -214,7 +224,6 @@ def test_bootstrap_ci_coverage_with_effect_and_null():
     )
     # delta = -(-0.30)/2 = 0.15
     assert res_effect.ci_delta[0] > 0.0  # excludes 0
-    # Point estimate and CI contain the truth
     assert res_effect.ci_delta[0] <= 0.15 <= res_effect.ci_delta[1]
     assert res_effect.p_value_delta < 0.05
 
@@ -248,12 +257,12 @@ def test_bootstrap_se_roughly_matches_analytic_clustered_se():
 
 def test_resampling_moves_whole_games():
     """Verify that rows from the same game always move together in resamples."""
-    # Create 5 games, each game has distinct value for epa and phat
     records = []
     for g_i in range(5):
         for _ in range(4):
             records.append({
                 "game_id": f"g_{g_i}",
+                "season": 2022,
                 "epa": float(g_i),
                 "call_pass": 1.0,
                 "phat": 0.5,
@@ -273,8 +282,98 @@ def test_resampling_moves_whole_games():
     sampled_games = rng.integers(0, 5, size=5)
     sampled_rows = np.concatenate([game_row_indices[i] for i in sampled_games])
 
-    # In sampled_rows, the counts of rows from each game must be exact multiples of 4
+    # In sampled_rows, counts of rows from each game must be exact multiples of 4
     sampled_df = df.iloc[sampled_rows]
     counts = sampled_df["game_id"].value_counts()
     for count in counts:
         assert count % 4 == 0
+
+
+# --- Placebo Tests ---
+
+
+def test_placebo_preserves_multiset_within_season_dd_bucket():
+    """Verify that shuffling preserves the exact multiset of phat within each cell."""
+    df = _create_synthetic_cluster_data(n_games=20, plays_per_game=25, seed=12)
+
+    # Group by season, dd_bucket
+    groups = df.groupby(["season", "dd_bucket"])
+    original_multisets = {
+        name: np.sort(group["phat"].to_numpy()) for name, group in groups
+    }
+
+    # Extract group index arrays as done in placebo
+    seasons = df["season"].to_numpy()
+    dd_buckets = df["dd_bucket"].to_numpy()
+    combo_keys = [f"{s}_{b}" for s, b in zip(seasons, dd_buckets, strict=False)]
+    _, group_inv = np.unique(combo_keys, return_inverse=True)
+    order = np.argsort(group_inv)
+    splits = np.flatnonzero(np.diff(group_inv[order])) + 1
+    group_row_indices = tuple(np.split(order, splits))
+
+    # Single shuffle with a worker
+    seed = np.random.SeedSequence(42).spawn(1)[0]
+    rng = np.random.default_rng(seed)
+    phat_orig = df["phat"].to_numpy()
+    phat_shuffled = phat_orig.copy()
+    for idx_array in group_row_indices:
+        phat_shuffled[idx_array] = rng.permutation(phat_orig[idx_array])
+
+    # Assert sorted values match exactly for every cell
+    df_shuffled = df.copy()
+    df_shuffled["phat"] = phat_shuffled
+    shuffled_groups = df_shuffled.groupby(["season", "dd_bucket"])
+    for name, group in shuffled_groups:
+        shuffled_vals = np.sort(group["phat"].to_numpy())
+        np.testing.assert_array_equal(original_multisets[name], shuffled_vals)
+
+
+def test_placebo_deterministic_and_n_jobs_invariance():
+    """Verify placebo results are identical for n_jobs=1 and n_jobs=2."""
+    df = _create_synthetic_cluster_data(n_games=20, plays_per_game=20, seed=55)
+
+    p1 = placebo(df, spec="B", n_perm=20, n_jobs=1, seed=42)
+    p2 = placebo(df, spec="B", n_perm=20, n_jobs=2, seed=42)
+
+    assert isinstance(p1, PlaceboResult)
+    assert p1.delta_observed == pytest.approx(p2.delta_observed, abs=1e-12)
+    assert np.allclose(p1.null_distribution, p2.null_distribution, atol=1e-12)
+    assert p1.pct_2_5 == pytest.approx(p2.pct_2_5, abs=1e-10)
+    assert p1.pct_97_5 == pytest.approx(p2.pct_97_5, abs=1e-10)
+    assert p1.outside_range == p2.outside_range
+    assert p1.p_value == pytest.approx(p2.p_value, abs=1e-10)
+
+
+def test_placebo_strong_effect_outside_range():
+    """Verify that on synthetic data with strong effect, outside_range is True."""
+    # Strong effect: b3 = -0.50 => delta = +0.25
+    df = _create_synthetic_cluster_data(
+        n_games=80, plays_per_game=40, b3=-0.50, seed=101
+    )
+    res = placebo(df, spec="B", n_perm=100, n_jobs=1, seed=42)
+
+    assert res.outside_range is True
+    assert res.delta_observed > res.pct_97_5
+    assert res.p_value < 0.05
+
+
+def test_placebo_null_coverage_rate():
+    """Verify observed falls inside placebo range in roughly 95% of small sims."""
+    # Run 50 small simulations under the null (b3 = 0.0)
+    # 50 reps with 40 permutations each gives high speed and valid check
+    n_sims = 50
+    inside_count = 0
+
+    rng = np.random.default_rng(777)
+    for i in range(n_sims):
+        sim_seed = int(rng.integers(1, 1_000_000))
+        df_null = _create_synthetic_cluster_data(
+            n_games=25, plays_per_game=25, b3=0.0, seed=sim_seed
+        )
+        res = placebo(df_null, spec="B", n_perm=40, n_jobs=1, seed=sim_seed)
+        if not res.outside_range:
+            inside_count += 1
+
+    coverage_rate = inside_count / n_sims
+    # Expect ~95%, accept 85% to 100%
+    assert 0.85 <= coverage_rate <= 1.00

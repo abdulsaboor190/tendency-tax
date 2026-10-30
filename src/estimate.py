@@ -1,7 +1,8 @@
 """Regression specifications A and B for Tendency Tax estimation.
 
 Implements fast OLS estimation on numpy arrays (fit_arrays),
-DataFrame wrapper (fit_spec), and game-clustered bootstrap (cluster_bootstrap).
+DataFrame wrapper (fit_spec), game-clustered bootstrap (cluster_bootstrap),
+and within-(season, dd_bucket) placebo permutation tests (placebo).
 
 Outcome: epa.
 Call: call_pass (1 = pass call).
@@ -53,6 +54,17 @@ class BootstrapResult(NamedTuple):
     ci_delta_pass: tuple[float, float]
     se_delta: float
     p_value_delta: float
+
+
+class PlaceboResult(NamedTuple):
+    spec: str
+    n_perm: int
+    delta_observed: float
+    null_distribution: np.ndarray
+    pct_2_5: float
+    pct_97_5: float
+    outside_range: bool
+    p_value: float
 
 
 def _demean_by_group(
@@ -306,7 +318,6 @@ def cluster_bootstrap(
     groups = df["dd_bucket"].to_numpy() if spec_clean == "B" else None
 
     # 3. Precompute per-game row indices
-    # Group row indices by unique game_id
     game_ids = df["game_id"].to_numpy()
     unique_games, game_inv = np.unique(game_ids, return_inverse=True)
     n_games = len(unique_games)
@@ -357,8 +368,7 @@ def cluster_bootstrap(
     # Bootstrap SE for delta
     se_delta = float(np.std(deltas, ddof=1))
 
-    # Two-sided p-value for delta:
-    # min(1, 2 * min((1 + #(b <= 0)) / (B + 1), (1 + #(b >= 0)) / (B + 1)))
+    # Two-sided p-value for delta
     n_le_zero = np.sum(deltas <= 0)
     n_ge_zero = np.sum(deltas >= 0)
     p_val = float(
@@ -382,6 +392,137 @@ def cluster_bootstrap(
         ci_delta_pass=ci_delta_pass,
         se_delta=se_delta,
         p_value_delta=p_val,
+    )
+
+
+def _placebo_worker(
+    seed: np.random.SeedSequence,
+    group_row_indices: tuple[np.ndarray, ...],
+    epa: np.ndarray,
+    call: np.ndarray,
+    phat: np.ndarray,
+    groups: np.ndarray | None,
+    spec: str,
+) -> float:
+    """Single placebo replicate worker function.
+
+    Permutes phat within each (season, dd_bucket) group, keeps call and epa fixed,
+    and returns delta.
+    """
+    rng = np.random.default_rng(seed)
+    phat_perm = phat.copy()
+    for idx_array in group_row_indices:
+        phat_perm[idx_array] = rng.permutation(phat[idx_array])
+
+    res = fit_arrays(
+        epa=epa,
+        call=call,
+        phat=phat_perm,
+        groups=groups,
+        spec=spec,
+    )
+    return res.delta
+
+
+def placebo(
+    df: pd.DataFrame,
+    spec: str = "B",
+    n_perm: int = config.PLACEBO_REPS,
+    n_jobs: int = -1,
+    seed: int = config.RANDOM_SEED,
+) -> PlaceboResult:
+    """Placebo test by permuting phat within each (season, dd_bucket) cell.
+
+    EPA and call are kept fixed. Only phat is shuffled within each cell.
+    Spec B fixed effects and call*phat interaction are recomputed under the shuffle.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing season, dd_bucket, epa, call_pass, and phat.
+    spec : str
+        "A" or "B" (defaults to "B").
+    n_perm : int
+        Number of permutations (default config.PLACEBO_REPS).
+    n_jobs : int
+        Number of parallel workers.
+    seed : int
+        Random seed for SeedSequence.
+
+    Returns
+    -------
+    PlaceboResult
+    """
+    for col in ["season", "dd_bucket", "epa", "call_pass", "phat"]:
+        if col not in df.columns:
+            raise KeyError(f"Required column '{col}' missing from DataFrame.")
+
+    spec_clean = spec.strip().upper()
+
+    # 1. Observed point estimate
+    obs_res = fit_spec(df, spec=spec_clean)
+    delta_obs = obs_res.delta
+
+    # 2. Extract numpy arrays
+    epa = df["epa"].to_numpy(dtype=np.float64)
+    call = df["call_pass"].to_numpy(dtype=np.float64)
+    phat = df["phat"].to_numpy(dtype=np.float64)
+    groups = df["dd_bucket"].to_numpy() if spec_clean == "B" else None
+
+    # 3. Precompute row index arrays for each (season, dd_bucket) group
+    seasons = df["season"].to_numpy()
+    dd_buckets = df["dd_bucket"].to_numpy()
+    # Combine season and dd_bucket as string keys
+    combo_keys = [f"{s}_{b}" for s, b in zip(seasons, dd_buckets, strict=False)]
+    _, group_inv = np.unique(combo_keys, return_inverse=True)
+
+    order = np.argsort(group_inv)
+    sorted_inv = group_inv[order]
+    splits = np.flatnonzero(np.diff(sorted_inv)) + 1
+    grouped_row_indices = np.split(order, splits)
+    group_row_indices: tuple[np.ndarray, ...] = tuple(grouped_row_indices)
+
+    # 4. Deterministic RNG stream per permutation
+    root_seq = np.random.SeedSequence(seed)
+    child_seeds = root_seq.spawn(n_perm)
+
+    # 5. Parallel execution with joblib
+    null_deltas = joblib.Parallel(n_jobs=n_jobs)(
+        joblib.delayed(_placebo_worker)(
+            child_seeds[i],
+            group_row_indices,
+            epa,
+            call,
+            phat,
+            groups,
+            spec_clean,
+        )
+        for i in range(n_perm)
+    )
+    null_dist = np.array(null_deltas, dtype=np.float64)
+
+    # 6. Null percentiles [2.5, 97.5]
+    pct_2_5 = float(np.percentile(null_dist, 2.5))
+    pct_97_5 = float(np.percentile(null_dist, 97.5))
+
+    # 7. Outside range flag (strict inequalities)
+    outside_range = bool(delta_obs < pct_2_5 or delta_obs > pct_97_5)
+
+    # 8. Two-sided permutation p-value:
+    # (1 + #(|null| >= |observed|)) / (n_perm + 1)
+    abs_obs = abs(delta_obs)
+    n_as_extreme = np.sum(np.abs(null_dist) >= abs_obs)
+    p_val = float((1 + n_as_extreme) / (n_perm + 1))
+
+    return PlaceboResult(
+        spec=spec_clean,
+        n_perm=n_perm,
+        delta_observed=delta_obs,
+        null_distribution=null_dist,
+        pct_2_5=pct_2_5,
+        pct_97_5=pct_97_5,
+        outside_range=outside_range,
+        p_value=p_val,
     )
 
 
@@ -431,7 +572,6 @@ def run_pipeline() -> dict[str, Any]:
     elapsed = time.perf_counter() - t0
     per_rep = elapsed / n_bench
     proj_tune_1000 = per_rep * 1000
-    # Early has ~143k plays (~1580 games) vs tune ~50k plays (~543 games), roughly 2.9x
     proj_early_1000 = proj_tune_1000 * (len(early_df) / len(tune_df))
 
     print(f"Tune bootstrap ({n_bench} reps, n_jobs=-1): {elapsed:.2f}s")
@@ -448,6 +588,21 @@ def run_pipeline() -> dict[str, Any]:
         f"Tune Spec B Delta: {boot_tune.delta:+.4f}, "
         f"95% CI [{boot_tune.ci_delta[0]:+.4f}, {boot_tune.ci_delta[1]:+.4f}], "
         f"SE: {boot_tune.se_delta:.4f}, p: {boot_tune.p_value_delta:.4f}"
+    )
+
+    print("\n" + "=" * 60)
+    print("PLACEBO TEST BENCHMARK ON TUNE SPLIT")
+    print("=" * 60)
+    t0_p = time.perf_counter()
+    n_perm_bench = 100
+    placebo_tune = placebo(tune_df, spec="B", n_perm=n_perm_bench, n_jobs=-1)
+    elapsed_p = time.perf_counter() - t0_p
+    print(
+        f"Tune Placebo ({n_perm_bench} perms): {elapsed_p:.2f}s | "
+        f"Observed delta: {placebo_tune.delta_observed:+.4f}, "
+        f"Null 95% range: [{placebo_tune.pct_2_5:+.4f}, {placebo_tune.pct_97_5:+.4f}], "
+        f"Outside range: {placebo_tune.outside_range}, "
+        f"p-value: {placebo_tune.p_value:.4f}"
     )
 
     return results
