@@ -17,7 +17,7 @@ test:
 	uv run ruff check .
 
 dev-run:
-	@echo dev-run target is a stub
+	uv run python -m scripts.run_all --stage dev
 
 confirm:
 	@echo confirm target is a stub
