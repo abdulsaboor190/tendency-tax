@@ -6,6 +6,8 @@ Deliverables:
     and cross-split comparison
   - D8.3: 27-cell overview grid with hatched fill for can't tell, state legend,
     accessible fallback table, and interactive cell selection
+  - D8.4: Scenario slider with interactive score differential & time remaining,
+    scikit-learn version verification, and feature order validation
 
 Controls:
   - Down (1, 2, 3)
@@ -18,10 +20,14 @@ Default split is 'tune' as pre-registered in PLAN.md (Decision 3).
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 from typing import Any
 
+import joblib
 import pandas as pd
+import sklearn
 import streamlit as st
 
 from app.data import (
@@ -78,6 +84,29 @@ SPLIT_LABELS: dict[str, str] = {
     "holdout": "Holdout (2024–2025)",
     "all": "All (2016–2025)",
 }
+
+# Representative defaults per situational cell
+DIST_REPRESENTATIVE_YDSTOGO: dict[str, int] = {
+    "short": 2,    # Midpoint of 1-3
+    "medium": 6,   # Midpoint of 4-7
+    "long": 10,    # Standard long yardage (8+)
+}
+
+ZONE_REPRESENTATIVE_YARDLINE: dict[str, int] = {
+    "red_zone": 10,   # Inside red zone (1-20)
+    "midfield": 50,   # Center midfield (21-79)
+    "backed_up": 85,  # Backed up territory (80-99)
+}
+
+FIXED_SCENARIO_DEFAULTS: dict[str, Any] = {
+    "qtr": 2,
+    "posteam_timeouts_remaining": 3,
+    "defteam_timeouts_remaining": 3,
+    "posteam_spread": 0.0,
+}
+
+MODEL_PATH = Path("results/models/phat_model_2016_2023.joblib")
+METADATA_PATH = Path("results/models/phat_model_2016_2023.json")
 
 
 # ---------------------------------------------------------------------------
@@ -262,11 +291,97 @@ def build_fallback_table(
 
 
 # ---------------------------------------------------------------------------
+# Scenario Slider Model Helpers (Deliverable D8.4)
+# ---------------------------------------------------------------------------
+
+@st.cache_resource
+def load_scenario_model() -> tuple[Any | None, dict[str, Any] | None, str | None]:
+    """Load saved model and metadata with version check.
+
+    Returns
+    -------
+    tuple[Any | None, dict[str, Any] | None, str | None]
+        (model, metadata, error_or_mismatch_message)
+    """
+    if not MODEL_PATH.exists() or not METADATA_PATH.exists():
+        return (
+            None,
+            None,
+            f"Saved model artifact not found at {MODEL_PATH}.",
+        )
+
+    try:
+        with open(METADATA_PATH, encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception as e:
+        return None, None, f"Failed to load model metadata: {e}"
+
+    expected_ver = meta.get("sklearn_version", "")
+    installed_ver = sklearn.__version__
+    if expected_ver and expected_ver != installed_ver:
+        return (
+            None,
+            meta,
+            (
+                f"scikit-learn version mismatch: model was serialized with "
+                f"version {expected_ver}, but installed version is {installed_ver}. "
+                "Scenario slider is disabled to ensure numerical reliability."
+            ),
+        )
+
+    try:
+        model = joblib.load(MODEL_PATH)
+    except Exception as e:
+        return None, meta, f"Failed to load serialized model: {e}"
+
+    return model, meta, None
+
+
+def predict_scenario_phat(
+    model: Any,
+    features_list: list[str],
+    down: int,
+    dist: str,
+    zone: str,
+    score_diff: int,
+    half_sec_remaining: int,
+) -> float:
+    """Predict pass probability p̂ for a specific scenario using fixed defaults."""
+    ydstogo = DIST_REPRESENTATIVE_YDSTOGO.get(dist, 10)
+    yardline_100 = ZONE_REPRESENTATIVE_YARDLINE.get(zone, 50)
+    qtr = 2
+    game_sec_remaining = half_sec_remaining
+
+    input_dict = {
+        "down": int(down),
+        "ydstogo": int(ydstogo),
+        "yardline_100": int(yardline_100),
+        "qtr": int(qtr),
+        "game_seconds_remaining": int(game_sec_remaining),
+        "half_seconds_remaining": int(half_sec_remaining),
+        "score_differential": int(score_diff),
+        "posteam_timeouts_remaining": int(
+            FIXED_SCENARIO_DEFAULTS["posteam_timeouts_remaining"]
+        ),
+        "defteam_timeouts_remaining": int(
+            FIXED_SCENARIO_DEFAULTS["defteam_timeouts_remaining"]
+        ),
+        "posteam_spread": float(FIXED_SCENARIO_DEFAULTS["posteam_spread"]),
+    }
+
+    # Verify input DataFrame columns match metadata feature order exactly
+    df_input = pd.DataFrame([input_dict])[features_list]
+    proba = model.predict_proba(df_input)
+    # Target class 1 is qb_dropback (pass)
+    return float(proba[0, 1])
+
+
+# ---------------------------------------------------------------------------
 # View Renderer
 # ---------------------------------------------------------------------------
 
 def render() -> None:
-    """Render the Situation Explorer with controls, 27-cell overview, and cell panel."""
+    """Render the Situation Explorer with overview grid, cell panel, and slider."""
     inject_css()
     load_res = get_results_bundle()
     render_page_header(load_res)
@@ -649,6 +764,83 @@ def render() -> None:
                 height=260,
             )
             st.plotly_chart(fig, use_container_width=True)
+
+        # -------------------------------------------------------------------
+        # 6. Scenario Slider (Deliverable D8.4)
+        # -------------------------------------------------------------------
+        st.write("")
+        st.markdown("##### Interactive Scenario Slider")
+        st.caption(
+            "Simulate situational pass expectation under hypothetical game state "
+            "using the primary pre-snap expectation model (trained on 2016–2023)."
+        )
+
+        model, metadata, err_note = load_scenario_model()
+
+        if err_note or model is None or metadata is None:
+            # On version mismatch or missing artifact, show note and hide slider
+            caveat_callout(
+                err_note or "Scenario model unavailable.",
+                kind="info",
+            )
+        else:
+            features = metadata.get("features", [])
+
+            col_sl1, col_sl2 = st.columns(2)
+            with col_sl1:
+                score_diff = st.slider(
+                    "Score Differential (Possession team − Defense)",
+                    min_value=-28,
+                    max_value=28,
+                    value=0,
+                    step=1,
+                    help="Negative means trailing; positive means leading.",
+                    key="scenario_score_diff",
+                )
+            with col_sl2:
+                time_remaining = st.slider(
+                    "Time Remaining in Half (seconds)",
+                    min_value=0,
+                    max_value=1800,
+                    value=900,
+                    step=30,
+                    help="1800s = half start; 900s = 15 min; 120s = 2 min warning.",
+                    key="scenario_time_remaining",
+                )
+
+            # Predict scenario phat
+            scenario_phat = predict_scenario_phat(
+                model=model,
+                features_list=features,
+                down=selected_down,
+                dist=selected_dist,
+                zone=selected_zone,
+                score_diff=score_diff,
+                half_sec_remaining=time_remaining,
+            )
+
+            # Documented fixed defaults list
+            rep_ydstogo = DIST_REPRESENTATIVE_YDSTOGO.get(selected_dist, 10)
+            rep_yardline = ZONE_REPRESENTATIVE_YARDLINE.get(selected_zone, 50)
+            mins = time_remaining // 60
+            secs = time_remaining % 60
+            dist_desc = DIST_LABELS[selected_dist]
+            zone_desc = ZONE_LABELS[selected_zone]
+
+            st.metric(
+                "Model-Estimated Pass Probability p̂",
+                f"{scenario_phat * 100:.1f}%",
+                help="Pre-snap probability estimate from the model.",
+            )
+
+            st.caption(
+                f"ℹ️ Note: This is a **model estimate** of pre-snap pass probability, "
+                "not an observed play-calling rate. Fixed scenario parameters: "
+                f"Down {selected_down}, Yards to Go = {rep_ydstogo} ({dist_desc}), "
+                f"Yardline = {rep_yardline} ({zone_desc}), "
+                f"Quarter = 2, Time = {mins}:{secs:02d}, "
+                "Timeouts = 3 (both teams), Point Spread = 0.0."
+            )
 
     else:
         msg = (

@@ -50,6 +50,13 @@ def _make_st_mock() -> MagicMock:
     m = MagicMock()
     m.pills.return_value = None
     m.segmented_control.return_value = None
+    m.slider.return_value = 900
+
+    def _selectbox(*args, **kwargs):
+        opts = kwargs.get("options", ["1_short_midfield"])
+        return opts[0] if opts else "1_short_midfield"
+
+    m.selectbox.side_effect = _selectbox
 
     def _columns(n, *args, **kwargs):
         if isinstance(n, int):
@@ -558,7 +565,87 @@ def test_fallback_table_has_27_rows():
 
 
 # ---------------------------------------------------------------------------
-# 11. Banned causal words absent
+# 11. Deliverable D8.4 Tests: Scenario Slider, Version Check & Latency
+# ---------------------------------------------------------------------------
+
+
+def test_scenario_model_mismatch_path():
+    """Version mismatch returns an informative note and disabled model."""
+    from app.views.situation_explorer import load_scenario_model
+
+    fake_metadata = {"sklearn_version": "0.99.9", "features": ["down"]}
+    with (
+        patch("pathlib.Path.exists", return_value=True),
+        patch("builtins.open"),
+        patch("json.load", return_value=fake_metadata),
+    ):
+        load_scenario_model.clear()
+        model, meta, err_note = load_scenario_model()
+
+    assert model is None
+    assert err_note is not None
+    assert "version mismatch" in err_note
+    load_scenario_model.clear()
+
+
+def test_scenario_model_feature_order_and_prediction():
+    """Features match metadata order; prediction in [0, 1]; latency < 300ms."""
+    import time
+
+    from app.views.situation_explorer import (
+        METADATA_PATH,
+        MODEL_PATH,
+        load_scenario_model,
+        predict_scenario_phat,
+    )
+
+    if not MODEL_PATH.exists() or not METADATA_PATH.exists():
+        pytest.skip("Model artifacts not found")
+
+    load_scenario_model.clear()
+    model, metadata, err = load_scenario_model()
+    if err:
+        pytest.skip(f"Scenario model returned note: {err}")
+
+    assert model is not None
+    assert metadata is not None
+    features = metadata.get("features", [])
+    expected_order = [
+        "down",
+        "ydstogo",
+        "yardline_100",
+        "qtr",
+        "game_seconds_remaining",
+        "half_seconds_remaining",
+        "score_differential",
+        "posteam_timeouts_remaining",
+        "defteam_timeouts_remaining",
+        "posteam_spread",
+    ]
+    assert features == expected_order
+
+    # Predict across test scenarios and verify response time < 300 ms
+    for down in [1, 2, 3]:
+        for dist in ["short", "medium", "long"]:
+            for zone in ["red_zone", "midfield", "backed_up"]:
+                t0 = time.perf_counter()
+                p = predict_scenario_phat(
+                    model=model,
+                    features_list=features,
+                    down=down,
+                    dist=dist,
+                    zone=zone,
+                    score_diff=0,
+                    half_sec_remaining=900,
+                )
+                dt = (time.perf_counter() - t0) * 1000.0
+
+                assert 0.0 <= p <= 1.0, f"Predicted phat out of bounds: {p}"
+                assert dt < 300.0, f"Inference took {dt:.2f} ms (>300 ms limit)"
+
+
+# ---------------------------------------------------------------------------
+# 12. Banned causal words absent
 # ---------------------------------------------------------------------------
 
 
@@ -587,4 +674,5 @@ def test_no_banned_words_in_situation_explorer():
 
     matches = BANNED_WORDS.findall(text_to_check)
     assert not matches, f"Banned causal words found: {matches}"
+
 
