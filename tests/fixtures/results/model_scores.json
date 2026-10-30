@@ -1,0 +1,38 @@
+[
+  {
+    "split": "early",
+    "predictor": "model",
+    "log_loss": 0.564751,
+    "brier_score": 0.195436
+  },
+  {
+    "split": "early",
+    "predictor": "baseline",
+    "log_loss": 0.594821,
+    "brier_score": 0.208352
+  },
+  {
+    "split": "early",
+    "predictor": "xpass",
+    "log_loss": 0.558637,
+    "brier_score": 0.193026
+  },
+  {
+    "split": "tune",
+    "predictor": "model",
+    "log_loss": 0.569756,
+    "brier_score": 0.196872
+  },
+  {
+    "split": "tune",
+    "predictor": "baseline",
+    "log_loss": 0.599619,
+    "brier_score": 0.209774
+  },
+  {
+    "split": "tune",
+    "predictor": "xpass",
+    "log_loss": 0.571114,
+    "brier_score": 0.197275
+  }
+]

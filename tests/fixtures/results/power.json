@@ -1,0 +1,73 @@
+{
+  "calibration": {
+    "c_pass_minus_run": 0.1747,
+    "game_re_sd": 0.1613,
+    "noise_sd": 1.3465
+  },
+  "simulation_results": {
+    "delta_0.00": {
+      "true_delta": 0.0,
+      "n_sims": 300,
+      "mean_estimate": -0.00072,
+      "bias": -0.00072,
+      "mean_se": 0.0401,
+      "coverage_95": 0.9333,
+      "power": 0.0667,
+      "bootstrap_se_check": {
+        "analytic_se": 0.04161,
+        "bootstrap_se": 0.03965,
+        "relative_diff": 0.0471,
+        "within_15_pct": true
+      }
+    },
+    "delta_0.03": {
+      "true_delta": 0.03,
+      "n_sims": 300,
+      "mean_estimate": 0.02934,
+      "bias": -0.00066,
+      "mean_se": 0.03988,
+      "coverage_95": 0.94,
+      "power": 0.1167,
+      "bootstrap_se_check": {
+        "analytic_se": 0.04138,
+        "bootstrap_se": 0.04228,
+        "relative_diff": 0.0216,
+        "within_15_pct": true
+      }
+    },
+    "delta_0.05": {
+      "true_delta": 0.05,
+      "n_sims": 300,
+      "mean_estimate": 0.04907,
+      "bias": -0.00093,
+      "mean_se": 0.03998,
+      "coverage_95": 0.96,
+      "power": 0.2333,
+      "bootstrap_se_check": {
+        "analytic_se": 0.04135,
+        "bootstrap_se": 0.03763,
+        "relative_diff": 0.0899,
+        "within_15_pct": true
+      }
+    },
+    "delta_0.10": {
+      "true_delta": 0.1,
+      "n_sims": 300,
+      "mean_estimate": 0.09946,
+      "bias": -0.00054,
+      "mean_se": 0.03993,
+      "coverage_95": 0.9667,
+      "power": 0.6833,
+      "bootstrap_se_check": {
+        "analytic_se": 0.03989,
+        "bootstrap_se": 0.03758,
+        "relative_diff": 0.0579,
+        "within_15_pct": true
+      }
+    }
+  },
+  "holdout_expected_se": 0.04,
+  "smallest_delta_80_power_formula": 0.1119,
+  "smallest_delta_80_power_sim": null,
+  "is_fixture": true
+}

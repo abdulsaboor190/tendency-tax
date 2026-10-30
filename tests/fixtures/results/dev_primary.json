@@ -1,0 +1,115 @@
+{
+  "early": {
+    "n_plays": 142946,
+    "n_games": 1552,
+    "spec_b": {
+      "point_b1": 0.1994,
+      "point_b2": 0.03282,
+      "point_b3": -0.04719,
+      "delta": 0.02359,
+      "delta_ci_95": [
+        0.0049,
+        0.02018
+      ],
+      "delta_se": 0.01137,
+      "p_value_delta": 0.66667,
+      "delta_run": 0.03282,
+      "delta_run_ci_95": [
+        -0.02528,
+        0.02436
+      ],
+      "delta_pass": 0.01437,
+      "delta_pass_ci_95": [
+        -0.01456,
+        0.06564
+      ],
+      "placebo": {
+        "n_perm": 2,
+        "delta_observed": 0.02359,
+        "pct_2_5": -0.02706,
+        "pct_97_5": -0.00269,
+        "outside_range": true,
+        "p_value": 0.66667
+      }
+    },
+    "spec_a": {
+      "point_b1": 0.27463,
+      "point_b2": -0.11311,
+      "point_b3": -0.18925,
+      "delta": 0.09462,
+      "delta_ci_95": [
+        0.07602,
+        0.08761
+      ],
+      "delta_se": 0.00862,
+      "p_value_delta": 0.66667,
+      "delta_run": -0.11311,
+      "delta_run_ci_95": [
+        -0.14002,
+        -0.12881
+      ],
+      "delta_pass": 0.30236,
+      "delta_pass_ci_95": [
+        0.28085,
+        0.31524
+      ]
+    }
+  },
+  "tune": {
+    "n_plays": 50122,
+    "n_games": 543,
+    "spec_b": {
+      "point_b1": 0.17562,
+      "point_b2": 0.03895,
+      "point_b3": -0.09332,
+      "delta": 0.04666,
+      "delta_ci_95": [
+        0.00303,
+        0.05511
+      ],
+      "delta_se": 0.03876,
+      "p_value_delta": 0.66667,
+      "delta_run": 0.03895,
+      "delta_run_ci_95": [
+        0.03249,
+        0.10007
+      ],
+      "delta_pass": 0.05436,
+      "delta_pass_ci_95": [
+        -0.02642,
+        0.01015
+      ],
+      "placebo": {
+        "n_perm": 2,
+        "delta_observed": 0.04666,
+        "pct_2_5": -0.06144,
+        "pct_97_5": -0.01925,
+        "outside_range": true,
+        "p_value": 0.66667
+      }
+    },
+    "spec_a": {
+      "point_b1": 0.23091,
+      "point_b2": -0.06266,
+      "point_b3": -0.19964,
+      "delta": 0.09982,
+      "delta_ci_95": [
+        0.07198,
+        0.10508
+      ],
+      "delta_se": 0.02464,
+      "p_value_delta": 0.66667,
+      "delta_run": -0.06266,
+      "delta_run_ci_95": [
+        -0.0772,
+        -0.06245
+      ],
+      "delta_pass": 0.26231,
+      "delta_pass_ci_95": [
+        0.22117,
+        0.27262
+      ]
+    }
+  },
+  "is_fixture": true
+}

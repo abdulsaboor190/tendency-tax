@@ -1,0 +1,58 @@
+{
+  "early": {
+    "split": "early",
+    "n_plays": 142946,
+    "weighted_within_bucket_sd": 0.102702,
+    "within_bucket_sds": {
+      "1_long": 0.100549,
+      "1_medium": 0.08299,
+      "1_short": 0.090759,
+      "2_long": 0.105605,
+      "2_medium": 0.105171,
+      "2_short": 0.104764,
+      "3_long": 0.056461,
+      "3_medium": 0.025784,
+      "3_short": 0.266972
+    },
+    "distribution": {
+      "min": 0.050922,
+      "p05": 0.276946,
+      "p25": 0.445079,
+      "p50": 0.533179,
+      "p75": 0.736511,
+      "p95": 0.973845,
+      "max": 0.99036
+    },
+    "lean_share": 0.44195,
+    "followed_lean_share": 0.82319
+  },
+  "tune": {
+    "split": "tune",
+    "n_plays": 50122,
+    "weighted_within_bucket_sd": 0.101564,
+    "within_bucket_sds": {
+      "1_long": 0.097245,
+      "1_medium": 0.079292,
+      "1_short": 0.083382,
+      "2_long": 0.104575,
+      "2_medium": 0.106457,
+      "2_short": 0.111828,
+      "3_long": 0.048338,
+      "3_medium": 0.024365,
+      "3_short": 0.26902
+    },
+    "distribution": {
+      "min": 0.090802,
+      "p05": 0.274465,
+      "p25": 0.447625,
+      "p50": 0.531205,
+      "p75": 0.737532,
+      "p95": 0.973988,
+      "max": 0.987922
+    },
+    "lean_share": 0.445693,
+    "followed_lean_share": 0.817628
+  },
+  "summary": "Across both early and tune splits, the play-weighted within-bucket standard deviation of phat is substantial (~0.102 in early, ~0.102 in tune), demonstrating meaningful pre-snap variation in pass probability beyond down and distance alone. Furthermore, over 44% of plays exhibit strong situational leans (phat >= 0.65 or <= 0.35), where offenses follow the tendency over 81% of the time. This residual variation confirms that conditioning on down x distance fixed effects preserves statistical power for the main Spec B interaction test.",
+  "is_fixture": true
+}
