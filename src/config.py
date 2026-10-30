@@ -108,8 +108,11 @@ DISTANCE_BUCKETS: dict[str, tuple[int, int | None]] = {
 # Lean Thresholds & Simulation Parameters
 LEAN_PASS_THRESHOLD: float = 0.65  # phat >= 0.65 -> lean pass
 LEAN_RUN_THRESHOLD: float = 0.35   # phat <= 0.35 -> lean run
+LEAN_HIGH: float = 0.65            # Alias for LEAN_PASS_THRESHOLD
+LEAN_LOW: float = 0.35             # Alias for LEAN_RUN_THRESHOLD
 BOOTSTRAP_REPS: int = 1000
 PLACEBO_REPS: int = 500
+ROBUSTNESS_REPS: int = 500
 
 # Field-zone cut points in yardline_100 (Human Decision 1: [20, 80])
 # 3 zones: red_zone (<=20), midfield (21-79), backed_up (>=80)
@@ -118,6 +121,9 @@ ZONE_NAMES: tuple[str, ...] = ("red_zone", "midfield", "backed_up")
 
 # TODO: Human Decision (2) - Minimum plays per cell
 MIN_PLAYS_PER_CELL: Any = None
+
+# TODO: Human Decision (3) - Equivalence margin for cell delta (EPA/play)
+CELL_EQUIV_MARGIN: float | None = None
 
 # Model Hyperparameters (selected via log loss on tune split)
 MODEL_PARAMS: dict[str, Any] = {

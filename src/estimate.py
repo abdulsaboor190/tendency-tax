@@ -86,6 +86,7 @@ def fit_arrays(
     phat: np.ndarray,
     groups: np.ndarray | None = None,
     spec: str = "B",
+    extra_regressors: np.ndarray | None = None,
 ) -> SpecResult:
     """Fit regression Spec A or B on numpy arrays.
 
@@ -101,6 +102,9 @@ def fit_arrays(
         Group labels for fixed effects (required for Spec B, ignored for Spec A).
     spec : str
         "A" (single constant) or "B" (group fixed effects).
+    extra_regressors : np.ndarray | None
+        Optional (N, K) array of additive regressors (e.g. shotgun, no_huddle).
+        Demeaned within groups for Spec B, or kept alongside constant for Spec A.
 
     Returns
     -------
@@ -125,6 +129,17 @@ def fit_arrays(
         raise ValueError(f"Insufficient observations (n={n}) to fit regression.")
 
     interaction = c * p
+
+    # Extra regressors formatting
+    W: np.ndarray | None = None
+    if extra_regressors is not None:
+        W = np.asarray(extra_regressors, dtype=np.float64)
+        if W.ndim == 1:
+            W = W.reshape(-1, 1)
+        if len(W) != n:
+            raise ValueError(
+                f"extra_regressors length {len(W)} does not match epa length {n}"
+            )
 
     # Check for zero variance
     if np.var(c) == 0:
@@ -159,29 +174,39 @@ def fit_arrays(
         if np.var(p_tilde) == 0:
             raise ValueError("Demeaned 'phat' has zero variance.")
 
+        cols = [c_tilde, p_tilde, cp_tilde]
+        if W is not None:
+            for k in range(W.shape[1]):
+                w_k = _demean_by_group(W[:, k], group_codes, n_groups)
+                cols.append(w_k)
+
         # X design matrix (no constant after demeaning)
-        X = np.column_stack([c_tilde, p_tilde, cp_tilde])
+        X = np.column_stack(cols)
         rank = np.linalg.matrix_rank(X)
-        if rank < 3:
+        if rank < X.shape[1]:
             raise ValueError(
                 f"Design matrix is rank-deficient: rank {rank} < {X.shape[1]}"
             )
 
         # OLS without constant
-        # beta: [b1, b2, b3]
+        # beta: [b1, b2, b3, ...]
         beta, _, _, _ = np.linalg.lstsq(X, y_tilde, rcond=None)
         b1, b2, b3 = float(beta[0]), float(beta[1]), float(beta[2])
 
     else:  # Spec A
         ones = np.ones(n, dtype=np.float64)
-        X = np.column_stack([ones, c, p, interaction])
+        cols = [ones, c, p, interaction]
+        if W is not None:
+            for k in range(W.shape[1]):
+                cols.append(W[:, k])
+        X = np.column_stack(cols)
         rank = np.linalg.matrix_rank(X)
-        if rank < 4:
+        if rank < X.shape[1]:
             raise ValueError(
                 f"Design matrix is rank-deficient: rank {rank} < {X.shape[1]}"
             )
 
-        # beta: [const, b1, b2, b3]
+        # beta: [const, b1, b2, b3, ...]
         beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
         intercept_val = float(beta[0])
         b1, b2, b3 = float(beta[1]), float(beta[2]), float(beta[3])

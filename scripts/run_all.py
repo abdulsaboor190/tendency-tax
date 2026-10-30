@@ -1,8 +1,9 @@
 """End-to-end execution pipeline for Tendency Tax.
 
 Supports stages:
-  --stage dev:     Runs early and tune splits (bootstrap, placebo, deciles).
-  --stage confirm: Confirmatory holdout evaluation (2024-2025).
+  --stage dev:       Runs early and tune splits (bootstrap, placebo, deciles).
+  --stage confirm:   Confirmatory holdout evaluation (2024-2025).
+  --stage secondary: Secondary robustness, cell-level, and team-level analyses.
 """
 
 import argparse
@@ -327,6 +328,41 @@ def _get_git_commit(ref: str = "HEAD") -> str:
     return res.stdout.strip()
 
 
+def score_holdout_phat(holdout_raw: pd.DataFrame) -> pd.DataFrame:
+    """Score holdout plays strictly using the frozen 2016-2023 model."""
+    model_path = config.FROZEN_MODEL_PATH
+    meta_path = config.FROZEN_MODEL_META_PATH
+    if not model_path.exists() or not meta_path.exists():
+        raise FileNotFoundError(
+            "Frozen model or metadata JSON missing from results/models/."
+        )
+
+    with open(meta_path, encoding="utf-8") as f:
+        meta = json.load(f)
+
+    installed_sklearn = sklearn.__version__
+    if meta.get("sklearn_version") != installed_sklearn:
+        raise AssertionError(
+            f"scikit-learn version mismatch: installed {installed_sklearn} != "
+            f"metadata {meta.get('sklearn_version')}"
+        )
+    if meta.get("features") != config.FEATURES:
+        raise AssertionError("Feature list in metadata does not match config.FEATURES.")
+
+    frozen_clf = joblib.load(model_path)
+    holdout_df = holdout_raw.copy()
+    X_holdout = holdout_df[config.FEATURES]
+    holdout_df["phat"] = frozen_clf.predict_proba(X_holdout)[:, 1]
+
+    # Assertions on phat
+    if holdout_df["phat"].isna().any():
+        raise AssertionError("Null values detected in scored holdout phat.")
+    if (holdout_df["phat"] < 0.0).any() or (holdout_df["phat"] > 1.0).any():
+        raise AssertionError("Holdout phat values out of valid bounds [0, 1].")
+    print("Scored holdout with frozen 2016-2023 model successfully.")
+    return holdout_df
+
+
 def run_confirm_pipeline(
     force: bool = False,
     prompt_input_func: Any = input,
@@ -463,36 +499,7 @@ def run_confirm_pipeline(
     )
 
     # 8. Load frozen model and score holdout
-    model_path = config.FROZEN_MODEL_PATH
-    meta_path = config.FROZEN_MODEL_META_PATH
-    if not model_path.exists() or not meta_path.exists():
-        raise FileNotFoundError(
-            "Frozen model or metadata JSON missing from results/models/."
-        )
-
-    with open(meta_path, encoding="utf-8") as f:
-        meta = json.load(f)
-
-    installed_sklearn = sklearn.__version__
-    if meta.get("sklearn_version") != installed_sklearn:
-        raise AssertionError(
-            f"scikit-learn version mismatch: installed {installed_sklearn} != "
-            f"metadata {meta.get('sklearn_version')}"
-        )
-    if meta.get("features") != config.FEATURES:
-        raise AssertionError("Feature list in metadata does not match config.FEATURES.")
-
-    frozen_clf = joblib.load(model_path)
-    holdout_df = holdout_raw.copy()
-    X_holdout = holdout_df[config.FEATURES]
-    holdout_df["phat"] = frozen_clf.predict_proba(X_holdout)[:, 1]
-
-    # Assertions on phat
-    if holdout_df["phat"].isna().any():
-        raise AssertionError("Null values detected in scored holdout phat.")
-    if (holdout_df["phat"] < 0.0).any() or (holdout_df["phat"] > 1.0).any():
-        raise AssertionError("Holdout phat values out of valid bounds [0, 1].")
-    print("Scored holdout with frozen 2016-2023 model successfully.")
+    holdout_df = score_holdout_phat(holdout_raw)
 
     # 9. Spec B and Spec A regressions
     print("\nFitting Spec B and Spec A on Holdout...")
@@ -690,14 +697,126 @@ def run_confirm_pipeline(
     return primary_record
 
 
+def run_secondary_pipeline(
+    only: str | None = None,
+    n_boot: int = config.ROBUSTNESS_REPS,
+    n_jobs: int = -1,
+    skip_git_checks: bool = False,
+) -> dict[str, Any]:
+    """Execute the secondary analyses stage (robustness, cells, teams)."""
+    from src.robustness import compute_robustness_suite
+    from src.schema import validate_parquet_df
+
+    print("=" * 80)
+    print("SECONDARY STAGE PIPELINE (ROBUSTNESS, CELLS, TEAMS)")
+    print("=" * 80)
+
+    # Precondition 1: Environment variable check
+    if os.environ.get(config.HOLDOUT_ENV_VAR) != "1":
+        raise RuntimeError(
+            f"Precondition failed: Env var {config.HOLDOUT_ENV_VAR} != '1'."
+        )
+
+    # Precondition 2: results/primary.json must already exist
+    primary_json_path = Path("results/primary.json")
+    if not primary_json_path.exists():
+        raise RuntimeError(
+            f"Precondition failed: {primary_json_path} missing. "
+            "Confirmatory stage must be executed before secondary analyses."
+        )
+
+    print("Loading data for Early, Tune, and Holdout splits...")
+    early_df = add_phat(get_split("early"))
+    tune_df = add_phat(get_split("tune"))
+
+    holdout_raw = get_split("holdout")
+    if skip_git_checks:
+        holdout_df = holdout_raw.copy()
+        if "phat" not in holdout_df.columns:
+            holdout_df["phat"] = 0.5
+    else:
+        holdout_df = score_holdout_phat(holdout_raw)
+
+    dfs = {
+        "early": early_df,
+        "tune": tune_df,
+        "holdout": holdout_df,
+    }
+
+    results: dict[str, Any] = {}
+
+    # Robustness suite
+    if only is None or only == "robustness":
+        print("\n--- Running Robustness Suite ---")
+        t0 = time.perf_counter()
+        rob_df = compute_robustness_suite(dfs, n_boot=n_boot, n_jobs=n_jobs)
+        validate_parquet_df(
+            rob_df, schema_name="robustness", filename="robustness.parquet"
+        )
+        out_path = Path("results/robustness.parquet")
+        rob_df.to_parquet(out_path, index=False)
+        elapsed_sec = time.perf_counter() - t0
+        print(f"Robustness suite completed in {elapsed_sec:.2f}s ({out_path}).")
+        results["robustness"] = rob_df
+
+    # Cells analysis (D5.3)
+    if only is None or only == "cells":
+        from src.cells import add_grid_cell_id, compute_cells_grid
+
+        print("\n--- Running 27-Cell Grid Analysis ---")
+        t0 = time.perf_counter()
+        # Build grid cell_id on every split before passing to compute_cells_grid
+        dfs_cells = {k: add_grid_cell_id(v) for k, v in dfs.items()}
+        cells_df = compute_cells_grid(
+            dfs_cells,
+            n_boot=n_boot,
+            n_jobs=n_jobs,
+        )
+        validate_parquet_df(
+            cells_df, schema_name="cells", filename="cells.parquet"
+        )
+        out_path = Path("results/cells.parquet")
+        cells_df.to_parquet(out_path, index=False)
+        elapsed_sec = time.perf_counter() - t0
+        print(
+            f"27-cell grid completed in {elapsed_sec:.2f}s ({out_path})."
+        )
+        results["cells"] = cells_df
+
+    # Teams analysis (D5.4)
+    if only is None or only == "teams":
+        from src.teams import compute_team_scout
+
+        print("\n--- Running Team Scout Analysis ---")
+        t0 = time.perf_counter()
+        teams_df = compute_team_scout(dfs)
+        validate_parquet_df(
+            teams_df, schema_name="teams", filename="teams.parquet"
+        )
+        out_path = Path("results/teams.parquet")
+        teams_df.to_parquet(out_path, index=False)
+        elapsed_sec = time.perf_counter() - t0
+        print(f"Team scout completed in {elapsed_sec:.2f}s ({out_path}).")
+        results["teams"] = teams_df
+
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Tendency Tax pipeline.")
     parser.add_argument(
         "--stage",
         type=str,
         required=True,
-        choices=["dev", "confirm"],
+        choices=["dev", "confirm", "secondary"],
         help="Pipeline stage to execute.",
+    )
+    parser.add_argument(
+        "--only",
+        type=str,
+        default=None,
+        choices=["robustness", "cells", "teams"],
+        help="Optional sub-module to run within the secondary stage.",
     )
     parser.add_argument(
         "--force",
@@ -711,6 +830,8 @@ def main() -> None:
         run_dev_pipeline()
     elif args.stage == "confirm":
         run_confirm_pipeline(force=args.force)
+    elif args.stage == "secondary":
+        run_secondary_pipeline(only=args.only)
 
 
 if __name__ == "__main__":

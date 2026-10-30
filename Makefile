@@ -1,4 +1,4 @@
-.PHONY: setup data test dev-run confirm app diagnostics power
+.PHONY: setup data test dev-run confirm app diagnostics power secondary
 
 setup:
 	uv sync
@@ -11,6 +11,9 @@ diagnostics:
 
 power:
 	uv run python -m src.simulate
+
+secondary:
+	uv run python -m scripts.run_all --stage secondary
 
 test:
 	uv run pytest
