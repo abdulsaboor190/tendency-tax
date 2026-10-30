@@ -1,0 +1,21 @@
+# Data
+data/raw/
+data/cache/
+
+# Virtual Environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+
+# Testing and Linting
+.pytest_cache/
+.ruff_cache/

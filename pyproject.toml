@@ -1,0 +1,31 @@
+[project]
+name = "tendency-tax"
+version = "0.1.0"
+description = "Test whether NFL offenses gain or lose EPA when their pass/run call is predictable from the pre-snap situation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "joblib",
+    "numpy",
+    "pandas",
+    "plotly",
+    "pyarrow",
+    "pydantic",
+    "pytest",
+    "ruff",
+    "scikit-learn",
+    "scipy",
+    "statsmodels",
+    "streamlit",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
