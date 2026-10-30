@@ -99,9 +99,10 @@ LEAN_RUN_THRESHOLD: float = 0.35   # phat <= 0.35 -> lean run
 BOOTSTRAP_REPS: int = 1000
 PLACEBO_REPS: int = 500
 
-# Human Decisions (Blanks to be filled by human)
-# TODO: Human Decision (1) - Field-zone cut points in yardline_100
-ZONE_CUT_POINTS: Any = None
+# Field-zone cut points in yardline_100 (Human Decision 1: [20, 80])
+# 3 zones: red_zone (<=20), midfield (21-79), backed_up (>=80)
+ZONE_CUT_POINTS: tuple[int, int] | None = (20, 80)
+ZONE_NAMES: tuple[str, ...] = ("red_zone", "midfield", "backed_up")
 
 # TODO: Human Decision (2) - Minimum plays per cell
 MIN_PLAYS_PER_CELL: Any = None

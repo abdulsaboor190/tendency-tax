@@ -41,9 +41,9 @@ def test_features_list():
     assert "no_huddle" not in FEATURES
 
 
-def test_human_decision_placeholders():
-    """Verify human decision placeholders are None with TODOs."""
-    assert ZONE_CUT_POINTS is None
+def test_human_decisions_and_placeholders():
+    """Verify ZONE_CUT_POINTS is set and MIN_PLAYS_PER_CELL is None."""
+    assert ZONE_CUT_POINTS == (20, 80)
     assert MIN_PLAYS_PER_CELL is None
 
 
