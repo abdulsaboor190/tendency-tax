@@ -26,4 +26,4 @@ confirm:
 	uv run python -m scripts.run_all --stage confirm
 
 app:
-	@echo app target is a stub
+	uv run streamlit run app/main.py

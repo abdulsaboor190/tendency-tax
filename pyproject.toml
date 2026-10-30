@@ -16,7 +16,7 @@ dependencies = [
     "scikit-learn",
     "scipy",
     "statsmodels",
-    "streamlit",
+    "streamlit==1.66.1",
 ]
 
 [tool.ruff]
