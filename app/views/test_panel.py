@@ -124,6 +124,14 @@ def render() -> None:
     ds_state = map_verdict_state(v.state, v.direction)
     verdict_banner(v.sentence, ds_state)
 
+    if ds_state == "cant_tell":
+        caveat_callout(
+            "An inconclusive result is not evidence of no effect. It means the "
+            "held-out evidence did not satisfy all three pre-declared decision "
+            "rules.",
+            kind="info",
+        )
+
     # ------------------------------------------------------------------
     # 2. Plain-language line from the numbers (association-only)
     # ------------------------------------------------------------------
