@@ -1,5 +1,7 @@
 """Streamlit application shell and navigation (Deliverable D6.2)."""
 
+import os
+
 import streamlit as st
 
 st.set_page_config(
@@ -32,12 +34,17 @@ pages = [
         title="About the Method",
         icon="📖",
     ),
-    st.Page(
-        "views/style_guide.py",
-        title="Design System & Style Guide",
-        icon="🎨",
-    ),
 ]
+
+# Style guide is only exposed during development mode (TENDENCY_DEV=1)
+if os.environ.get("TENDENCY_DEV") == "1":
+    pages.append(
+        st.Page(
+            "views/style_guide.py",
+            title="Design System & Style Guide",
+            icon="🎨",
+        )
+    )
 
 nav = st.navigation(pages)
 nav.run()

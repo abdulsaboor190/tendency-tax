@@ -20,6 +20,7 @@ import streamlit as st
 # 1. Okabe-Ito Color Tokens & Verdict States
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class VerdictToken:
     name: str
@@ -64,10 +65,10 @@ VERDICT_TOKENS: dict[str, VerdictToken] = {
 
 # Series Tokens
 SERIES_COLORS: dict[str, str] = {
-    "early": "#56B4E9",    # Sky Blue
-    "tune": "#E69F00",     # Orange
+    "early": "#56B4E9",  # Sky Blue
+    "tune": "#E69F00",  # Orange
     "holdout": "#0072B2",  # Blue
-    "all": "#333333",      # Charcoal / Neutral
+    "all": "#333333",  # Charcoal / Neutral
 }
 
 # General UI Tokens
@@ -87,20 +88,45 @@ FONT_FAMILY: str = (
 
 
 # ---------------------------------------------------------------------------
-# 2. CSS Injection
+# 2. CSS Injection with Theme Awareness
 # ---------------------------------------------------------------------------
 
+
+def get_active_theme() -> str | None:
+    """Detect active theme from Streamlit context if available."""
+    try:
+        if hasattr(st, "context") and hasattr(st.context, "theme"):
+            theme_dict = st.context.theme
+            if isinstance(theme_dict, dict):
+                theme_type = theme_dict.get("type")
+                if theme_type in ("light", "dark"):
+                    return theme_type
+    except Exception:
+        pass
+    return None
+
+
 def inject_css() -> None:
-    """Inject custom design system CSS into the active Streamlit app."""
+    """Inject custom design system CSS and set data-theme attribute on root."""
     css_path = Path(__file__).parent / "style.css"
     if css_path.exists():
         css_text = css_path.read_text(encoding="utf-8")
         st.markdown(f"<style>{css_text}</style>", unsafe_allow_html=True)
 
+    active_theme = get_active_theme()
+    if active_theme in ("light", "dark"):
+        theme_script = (
+            f"<script>"
+            f"document.documentElement.setAttribute('data-theme', '{active_theme}');"
+            f"</script>"
+        )
+        st.markdown(theme_script, unsafe_allow_html=True)
+
 
 # ---------------------------------------------------------------------------
 # 3. HTML Component Helpers
 # ---------------------------------------------------------------------------
+
 
 def render_verdict_chip(state: str, custom_text: str | None = None) -> str:
     """Return HTML string for a colored verdict chip with icon + label."""
@@ -141,6 +167,7 @@ def render_callout(
 # ---------------------------------------------------------------------------
 # 4. Plotly Template ("tendency")
 # ---------------------------------------------------------------------------
+
 
 def register_plotly_template() -> None:
     """Register the 'tendency' Plotly template with accessible colors and font."""

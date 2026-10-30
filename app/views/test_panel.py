@@ -42,7 +42,7 @@ def render() -> None:
 
         # Primary metrics
         c1, c2, c3, c4 = st.columns(4)
-        spec_b = prim.spec_b
+        spec_b = prim.holdout.spec_b
         with c1:
             st.metric("Primary Delta (EPA)", format_epa(spec_b.delta))
         with c2:

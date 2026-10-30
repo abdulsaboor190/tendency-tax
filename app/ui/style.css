@@ -1,7 +1,7 @@
 /* Inter Font Import */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-:root {
+:root, [data-theme="light"] {
   --font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   
   /* Okabe-Ito Verdict Colors */
@@ -43,9 +43,29 @@
   --color-cant-tell-text: #495057;
 }
 
-/* Dark theme overrides */
+/* Explicit dark theme via data-theme attribute */
+[data-theme="dark"] {
+  --color-surface: #1E1E24;
+  --color-surface-subtle: #2B2C34;
+  --color-text: #F8F9FA;
+  --color-text-muted: #ADB5BD;
+  --color-border: #3A3D4A;
+  --color-border-subtle: #495057;
+
+  --color-premium-tint: rgba(0, 114, 178, 0.25);
+  --color-reverse-tint: rgba(213, 94, 0, 0.25);
+  --color-none-tint: rgba(0, 158, 115, 0.25);
+  --color-cant-tell-tint: rgba(138, 143, 152, 0.25);
+
+  --color-premium-text: #56B4E9;
+  --color-reverse-text: #FF9E66;
+  --color-none-text: #33CCA0;
+  --color-cant-tell-text: #C4C8CF;
+}
+
+/* System fallback when no explicit data-theme is specified */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --color-surface: #1E1E24;
     --color-surface-subtle: #2B2C34;
     --color-text: #F8F9FA;
