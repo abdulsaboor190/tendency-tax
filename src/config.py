@@ -3,7 +3,43 @@
 Constants only, no business logic.
 """
 
+from pathlib import Path
 from typing import Any
+
+# Paths
+RAW_DATA_DIR: Path = Path("data/raw")
+
+# Columns to load across project
+USECOLS: list[str] = [
+    "game_id",
+    "season",
+    "season_type",
+    "week",
+    "home_team",
+    "posteam",
+    "defteam",
+    "play_type",
+    "down",
+    "ydstogo",
+    "yardline_100",
+    "qtr",
+    "game_seconds_remaining",
+    "half_seconds_remaining",
+    "score_differential",
+    "posteam_timeouts_remaining",
+    "defteam_timeouts_remaining",
+    "spread_line",
+    "qb_dropback",
+    "qb_kneel",
+    "qb_spike",
+    "epa",
+    "success",
+    "wp",
+    "xpass",
+    "shotgun",
+    "no_huddle",
+    "penalty",
+]
 
 # Random Seed
 RANDOM_SEED: int = 42

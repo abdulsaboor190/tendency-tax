@@ -4,7 +4,7 @@ setup:
 	uv sync
 
 data:
-	@echo data target is a stub
+	uv run python -m src.load
 
 test:
 	uv run pytest

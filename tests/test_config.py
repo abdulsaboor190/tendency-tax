@@ -7,6 +7,7 @@ from src.config import (
     MIN_PLAYS_PER_CELL,
     SEASONS,
     SPLITS,
+    USECOLS,
     ZONE_CUT_POINTS,
 )
 
@@ -50,3 +51,11 @@ def test_lean_thresholds():
     """Verify lean thresholds."""
     assert LEAN_PASS_THRESHOLD == 0.65
     assert LEAN_RUN_THRESHOLD == 0.35
+
+
+def test_usecols():
+    """Verify USECOLS list contains required 28 columns."""
+    assert len(USECOLS) == 28
+    assert "epa" in USECOLS
+    assert "no_play" not in USECOLS
+    assert "qb_dropback" in USECOLS
