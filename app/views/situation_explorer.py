@@ -56,7 +56,7 @@ from app.ui.theme import VERDICT_TOKENS, inject_css
 
 DEFAULT_SPLIT: str = "tune"  # Decided in PLAN.md (Decision 3)
 DEFAULT_DOWN: int = 1
-DEFAULT_DIST: str = "short"
+DEFAULT_DIST: str = "long"
 DEFAULT_ZONE: str = "midfield"
 
 VALID_DOWNS: tuple[int, ...] = (1, 2, 3)
@@ -112,6 +112,15 @@ METADATA_PATH = Path("results/models/phat_model_2016_2023.json")
 # ---------------------------------------------------------------------------
 # State & Query Params Helpers
 # ---------------------------------------------------------------------------
+
+def get_readable_cell_title(down: int, dist: str, zone: str, split: str) -> str:
+    """Format readable title, e.g. '1st & long (8+ yds) · midfield · Tune'."""
+    ord_down = {1: "1st", 2: "2nd", 3: "3rd"}.get(down, f"{down}th")
+    dist_text = DIST_LABELS.get(dist, dist).lower()
+    zone_text = ZONE_LABELS.get(zone, zone).lower().split("(")[0].strip()
+    split_text = SPLIT_LABELS.get(split, split.capitalize()).split("[")[0].strip()
+    return f"{ord_down} & {dist_text} · {zone_text} · {split_text}"
+
 
 def parse_explorer_state() -> dict[str, Any]:
     """Parse down, dist, zone, and split from query params with fallback defaults.
@@ -188,8 +197,39 @@ def build_cell_split_rows(
     for s in split_order:
         sub = cell_rows[cell_rows["split"] == s]
         if sub.empty:
+            rows.append(
+                {
+                    "split": s,
+                    "label": SPLIT_LABELS.get(s, s.capitalize()),
+                    "delta": None,
+                    "ci_lo": None,
+                    "ci_hi": None,
+                    "n_plays": 0,
+                    "verdict": "cant_tell",
+                    "custom_text": "not testable (n=0)",
+                }
+            )
             continue
         rec = sub.iloc[0].to_dict()
+        testable = rec.get("testable", True)
+        below_min = rec.get("below_min_plays", False)
+        n_plays = rec.get("n_plays", 0)
+
+        if not testable or below_min:
+            rows.append(
+                {
+                    "split": s,
+                    "label": SPLIT_LABELS.get(s, s.capitalize()),
+                    "delta": None,
+                    "ci_lo": None,
+                    "ci_hi": None,
+                    "n_plays": n_plays,
+                    "verdict": "cant_tell",
+                    "custom_text": f"not testable (n={n_plays})",
+                }
+            )
+            continue
+
         delta = rec.get("delta")
         ci_lo = rec.get("ci_lo")
         ci_hi = rec.get("ci_hi")
@@ -208,7 +248,7 @@ def build_cell_split_rows(
                 "delta": d_val,
                 "ci_lo": lo_val,
                 "ci_hi": hi_val,
-                "n_plays": rec.get("n_plays", 0),
+                "n_plays": n_plays,
                 "verdict": verdict,
             }
         )
@@ -409,76 +449,98 @@ def render() -> None:
     # 1. Parse current state from query parameters (with robust fallback)
     state = parse_explorer_state()
 
-    # Reset button handling
-    if st.button(
-        "↺ Reset Filters", help="Reset all selections to pre-registered defaults"
-    ):
-        sync_explorer_query_params(
-            DEFAULT_DOWN, DEFAULT_DIST, DEFAULT_ZONE, DEFAULT_SPLIT
-        )
-        state = {
-            "down": DEFAULT_DOWN,
-            "dist": DEFAULT_DIST,
-            "zone": DEFAULT_ZONE,
-            "split": DEFAULT_SPLIT,
-        }
-        st.rerun()
+    # Reset & Jump to Most-Played Cell buttons
+    btn_col1, btn_col2, _ = st.columns([1, 1.4, 2])
+    with btn_col1:
+        if st.button(
+            "↺ Reset Filters", help="Reset all selections to pre-registered defaults"
+        ):
+            sync_explorer_query_params(
+                DEFAULT_DOWN, DEFAULT_DIST, DEFAULT_ZONE, DEFAULT_SPLIT
+            )
+            state = {
+                "down": DEFAULT_DOWN,
+                "dist": DEFAULT_DIST,
+                "zone": DEFAULT_ZONE,
+                "split": DEFAULT_SPLIT,
+            }
+            st.rerun()
 
-    # 2. Controls layout
-    st.subheader("Situational Controls")
+    with btn_col2:
+        if st.button(
+            "⚡ Jump to Most-Played Cell",
+            help="Navigate directly to the most populated testable cell",
+        ):
+            # Most played cell across splits: 1st & long midfield
+            sync_explorer_query_params(1, "long", "midfield", state["split"])
+            state["down"] = 1
+            state["dist"] = "long"
+            state["zone"] = "midfield"
+            st.rerun()
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Down**")
-        selected_down = st.pills(
-            "Down selection",
-            options=list(VALID_DOWNS),
-            default=state["down"],
-            label_visibility="collapsed",
-            key="explorer_down",
+    # 2. Controls layout grouped in one compact card
+    with st.container():
+        st.markdown('<div class="tendency-card">', unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-weight: 700; margin-bottom: 8px;'>"
+            "Situational Controls</div>",
+            unsafe_allow_html=True,
         )
-        if selected_down is None:
-            selected_down = state["down"]
 
-    with c2:
-        st.markdown("**Distance Bucket**")
-        selected_dist = st.pills(
-            "Distance bucket selection",
-            options=list(VALID_DISTS),
-            format_func=lambda d: DIST_LABELS.get(d, d),
-            default=state["dist"],
-            label_visibility="collapsed",
-            key="explorer_dist",
-        )
-        if selected_dist is None:
-            selected_dist = state["dist"]
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("Down")
+            selected_down = st.pills(
+                "Down selection",
+                options=list(VALID_DOWNS),
+                default=state["down"],
+                label_visibility="collapsed",
+                key="explorer_down",
+            )
+            if selected_down is None:
+                selected_down = state["down"]
 
-    c3, c4 = st.columns(2)
-    with c3:
-        st.markdown("**Field Zone** (yardline_100)")
-        selected_zone = st.pills(
-            "Field zone selection",
-            options=list(VALID_ZONES),
-            format_func=lambda z: ZONE_LABELS.get(z, z),
-            default=state["zone"],
-            label_visibility="collapsed",
-            key="explorer_zone",
-        )
-        if selected_zone is None:
-            selected_zone = state["zone"]
+        with c2:
+            st.caption("Distance Bucket")
+            selected_dist = st.pills(
+                "Distance bucket selection",
+                options=list(VALID_DISTS),
+                format_func=lambda d: DIST_LABELS.get(d, d),
+                default=state["dist"],
+                label_visibility="collapsed",
+                key="explorer_dist",
+            )
+            if selected_dist is None:
+                selected_dist = state["dist"]
 
-    with c4:
-        st.markdown("**Split Selection**")
-        selected_split = st.pills(
-            "Split selection",
-            options=list(VALID_SPLITS),
-            format_func=lambda s: SPLIT_LABELS.get(s, s),
-            default=state["split"],
-            label_visibility="collapsed",
-            key="explorer_split",
-        )
-        if selected_split is None:
-            selected_split = state["split"]
+        c3, c4 = st.columns(2)
+        with c3:
+            st.caption("Field Zone (yardline_100)")
+            selected_zone = st.pills(
+                "Field zone selection",
+                options=list(VALID_ZONES),
+                format_func=lambda z: ZONE_LABELS.get(z, z),
+                default=state["zone"],
+                label_visibility="collapsed",
+                key="explorer_zone",
+            )
+            if selected_zone is None:
+                selected_zone = state["zone"]
+
+        with c4:
+            st.caption("Split Selection")
+            selected_split = st.pills(
+                "Split selection",
+                options=list(VALID_SPLITS),
+                format_func=lambda s: SPLIT_LABELS.get(s, s),
+                default=state["split"],
+                label_visibility="collapsed",
+                key="explorer_split",
+            )
+            if selected_split is None:
+                selected_split = state["split"]
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     # Sync selection changes to query parameters
     if (
@@ -594,11 +656,11 @@ def render() -> None:
         zone=selected_zone,
     )
 
-    st.subheader(f"Cell Details: `{current_cell_id}`")
-    st.caption(
-        f"Context: Down {selected_down} • {DIST_LABELS[selected_dist]} • "
-        f"{ZONE_LABELS[selected_zone]} • Split: {selected_split.capitalize()}"
+    readable_title = get_readable_cell_title(
+        selected_down, selected_dist, selected_zone, selected_split
     )
+    st.subheader(readable_title)
+    st.caption(f"Cell ID: `{current_cell_id}`")
 
     if record is not None:
         delta_val = record.get("delta")
@@ -615,26 +677,25 @@ def render() -> None:
         verdict = record.get("verdict", "cant_tell")
         testable = record.get("testable", True)
         below_min = record.get("below_min_plays", False)
-        reason = record.get("reason", "No stored reason recorded.")
 
         chip_state = verdict if verdict in VERDICT_TOKENS else "cant_tell"
 
-        # Verdict chip and stored reason
+        # Verdict chip and plain wording
         st.markdown(
             f"{verdict_chip(chip_state)} &nbsp;&nbsp; "
-            f"<span style='color: #6C757D; font-size: 0.95rem;'>"
-            f"Stored reason: <em>{reason}</em></span>",
+            f"<span style='color: var(--color-text-muted); font-size: 0.95rem;'>"
+            f"Verdict: <strong>{VERDICT_TOKENS[chip_state].label}</strong></span>",
             unsafe_allow_html=True,
         )
         st.write("")
 
-        # Untestable or below minimum plays: friendly explanation, no point estimate
+        # Untestable or below minimum plays: plain language, no point estimate
         if not testable or below_min:
-            split_name = selected_split.capitalize()
+            split_label = SPLIT_LABELS.get(selected_split, selected_split.capitalize())
             caveat_callout(
-                f"This cell cannot be evaluated in the {split_name} split "
-                f"due to insufficient data or rank deficiency: {reason}. "
-                "Point estimates and intervals are not computed.",
+                f"Only {format_int(n_plays)} plays in this cell in the {split_label} "
+                f"seasons ({format_int(n_pass)} passes, {format_int(n_run)} runs), "
+                "too few to estimate. Try another split or cell.",
                 kind="warning",
             )
             card_val = "Not Testable"
@@ -667,9 +728,9 @@ def render() -> None:
                 else "—"
             )
 
-        # Key metrics: delta card + play/game context
-        c_m1, c_m2, c_m3 = st.columns([2, 1, 1])
-        with c_m1:
+        # Layout: one main card on the left, four small cards on the right
+        col_main, col_sub = st.columns([1.2, 1.8])
+        with col_main:
             delta_label = (
                 "Tendency Delta 95% Interval (EPA / play)"
                 if verdict == "cant_tell"
@@ -679,42 +740,56 @@ def render() -> None:
                 label=delta_label,
                 value=card_val,
                 interval=card_interval,
-                n=n_plays,
-                help_text=f"BH FDR adjusted q-value: {q_str}",
-            )
-        with c_m2:
-            st.metric("FDR q-value (BH)", q_str)
-            st.metric("Total Plays", format_int(n_plays))
-        with c_m3:
-            st.metric("Games Observed", format_int(n_games))
-            st.metric(
-                "Pass / Run Breakdown",
-                f"{format_int(n_pass)} / {format_int(n_run)}",
+                n=n_plays if (testable and not below_min) else None,
+                help_text=(
+                    f"Adjusted p-value (q): {q_str}. "
+                    "Controls False Discovery Rate via Benjamini-Hochberg."
+                ),
             )
 
-        # Situational pass probability summary (median + IQR)
+        with col_sub:
+            s1, s2 = st.columns(2)
+            with s1:
+                metric_card(
+                    label="Adjusted p-value (q)",
+                    value=q_str,
+                    help_text=(
+                        "Benjamini-Hochberg False Discovery Rate "
+                        "adjusted p-value across 27 cells"
+                    ),
+                )
+                metric_card(
+                    label="Total Plays Evaluated",
+                    value=format_int(n_plays),
+                )
+            with s2:
+                metric_card(
+                    label="Regular Season Games",
+                    value=format_int(n_games),
+                )
+                metric_card(
+                    label="Pass / Run Balance",
+                    value=f"{format_int(n_pass)} / {format_int(n_run)}",
+                )
+
+        # Situational pass probability summary (median + IQR) in plain language
         has_phat = phat_med is not None and not math.isnan(phat_med)
         if has_phat:
-            p25_str = (
-                f"{phat_p25:.3f}"
-                if (phat_p25 is not None and not math.isnan(phat_p25))
-                else "—"
-            )
-            p75_str = (
-                f"{phat_p75:.3f}"
-                if (phat_p75 is not None and not math.isnan(phat_p75))
-                else "—"
-            )
+            med_pct = round(phat_med * 100)
+            has_p25 = phat_p25 is not None and not math.isnan(phat_p25)
+            has_p75 = phat_p75 is not None and not math.isnan(phat_p75)
+            p25_pct = round(phat_p25 * 100) if has_p25 else 0
+            p75_pct = round(phat_p75 * 100) if has_p75 else 0
             st.caption(
-                f"Situational Pass Probability p̂: Median **{phat_med:.3f}** "
-                f"(Middle-Half IQR: [{p25_str}, {p75_str}]) • "
+                f"Typical predicted pass chance: **{med_pct}%** "
+                f"(middle half of plays: {p25_pct}%–{p75_pct}%) • "
                 f"Sample: **{format_int(n_pass)}** pass plays, "
                 f"**{format_int(n_run)}** run plays across "
                 f"**{format_int(n_games)}** games."
             )
         else:
             st.caption(
-                "Situational Pass Probability p̂: Not available • "
+                "Typical predicted pass chance: Not available • "
                 f"Sample: **{format_int(n_pass)}** pass plays, "
                 f"**{format_int(n_run)}** run plays."
             )
@@ -739,9 +814,9 @@ def render() -> None:
                 split_verdicts.append(
                     f"**{label_s}**: {verdict_chip(v_s, small=True)}"
                 )
-            chips_joined = " &nbsp;|&nbsp; ".join(split_verdicts)
+            chips_joined = " | ".join(split_verdicts)
             st.markdown(
-                f"Single-split verdicts for this cell: &nbsp;&nbsp;{chips_joined}",
+                f"Single-split verdicts for this cell: {chips_joined}",
                 unsafe_allow_html=True,
             )
 
@@ -749,7 +824,13 @@ def render() -> None:
         st.write("")
         st.markdown("##### Cross-Split Agreement for this Cell")
         split_rows = build_cell_split_rows(cells_df, current_cell_id)
-        if split_rows:
+        # Check if all four splits are non-testable
+        all_untestable = all(r.get("delta") is None for r in split_rows)
+        if all_untestable:
+            empty_state(
+                "All splits for this cell have too few plays to compute an estimate."
+            )
+        elif split_rows:
             fig = interval_plot(
                 rows=split_rows,
                 estimate_col="delta",
@@ -758,8 +839,8 @@ def render() -> None:
                 label_col="label",
                 n_col="n_plays",
                 state_col="verdict",
-                title=f"Tendency Delta Estimates Across Splits ({current_cell_id})",
-                xaxis_title="Delta (EPA per play)",
+                title=f"Tendency delta estimates across splits ({current_cell_id})",
+                xaxis_title="Tendency delta (EPA per play)",
                 zero_line=True,
                 height=260,
             )

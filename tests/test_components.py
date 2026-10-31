@@ -124,6 +124,27 @@ def test_components_render_without_error(monkeypatch):
     assert "state-legend-container" in calls[-1]
 
 
+def test_metric_card_outside_interval_guard(monkeypatch):
+    """metric_card displays warning icon and tooltip when estimate is outside interval."""
+    calls = []
+    import streamlit as st
+    monkeypatch.setattr(st, "markdown", lambda html, **kw: calls.append(html))
+
+    # Case 1: Point estimate inside interval -> no warning icon
+    metric_card("Inside", "+0.020", interval=(0.010, 0.030), n=500)
+    assert "⚠️" not in calls[-1]
+
+    # Case 2: Point estimate outside interval (+0.040 > 0.030) -> warning icon present
+    metric_card("Outside High", "+0.040", interval=(0.010, 0.030), n=500)
+    assert "⚠️" in calls[-1]
+    assert "The estimate lies outside its interval; see data notes." in calls[-1]
+
+    # Case 3: Point estimate below interval (-0.020 < -0.010) -> warning icon present
+    metric_card("Outside Low", "-0.020", interval=(-0.010, 0.050), n=500)
+    assert "⚠️" in calls[-1]
+    assert "The estimate lies outside its interval; see data notes." in calls[-1]
+
+
 # ---------------------------------------------------------------------------
 # 4. Banned Causal Words Test
 # ---------------------------------------------------------------------------

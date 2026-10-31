@@ -109,21 +109,17 @@ def build_decile_gap_chart(
     fig = go.Figure()
 
     # Series definitions in order of rendering
-    series_configs: list[tuple[str, str, pd.DataFrame | None]] = [
-        ("early", "Early (2016–2021)", early_df),
+    series_configs: list[tuple[str, str, str, str, pd.DataFrame | None]] = [
+        ("early", "Early (2016–2021)", "dash", "diamond", early_df),
     ]
     if include_tune and tune_df is not None:
-        series_configs.append(("tune", "Tune (2022–2023)", tune_df))
+        series_configs.append(("tune", "Tune (2022–2023)", "dot", "square", tune_df))
     if holdout_df is not None:
-        series_configs.append(("holdout", "Holdout (2024–2025)", holdout_df))
+        series_configs.append(
+            ("holdout", "Holdout (2024–2025)", "solid", "circle", holdout_df)
+        )
 
-    # Helper for converting hex color to rgba with opacity
-    def _hex_to_rgba(hex_color: str, alpha: float) -> str:
-        h = hex_color.lstrip("#")
-        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-        return f"rgba({r}, {g}, {b}, {alpha})"
-
-    for split_key, series_label, raw_df in series_configs:
+    for split_key, series_label, line_dash, marker_symbol, raw_df in series_configs:
         if raw_df is None or raw_df.empty:
             continue
 
@@ -141,7 +137,10 @@ def build_decile_gap_chart(
         ci_hi_vals = clean_df["ci_95_high"].tolist()
 
         color = SERIES_COLORS.get(split_key, "#8A8F98")
-        fill_color = _hex_to_rgba(color, 0.16)
+
+        # Compute asymmetric error bars
+        errors_above = [hi - y for hi, y in zip(ci_hi_vals, y_vals, strict=False)]
+        errors_below = [y - lo for lo, y in zip(ci_lo_vals, y_vals, strict=False)]
 
         # Custom hover data: decile range, gap, band, n pass, n run
         customdata = []
@@ -167,27 +166,12 @@ def build_decile_gap_chart(
                 format_int(nr),
             ])
 
-        # 1. Shaded CI band: Upper bound + Lower bound closed polygon
-        # Trace for upper bound
-        fig.add_trace(
-            go.Scatter(
-                x=x_vals + x_vals[::-1],
-                y=ci_hi_vals + ci_lo_vals[::-1],
-                fill="toself",
-                fillcolor=fill_color,
-                line=dict(color="rgba(255,255,255,0)"),
-                hoverinfo="skip",
-                showlegend=False,
-                name=f"{series_label} 95% CI",
-            )
-        )
-
-        # 2. Main point-and-line trace
+        # Main point-and-line trace with per-decile error bars
         hovertemplate = (
             f"<b>{series_label}</b><br>"
             "Decile %{x} (p̂ range: %{customdata[0]})<br>"
             "Pass − Run EPA Gap: <b>%{customdata[1]}</b><br>"
-            "95% Bootstrap Band: %{customdata[2]}<br>"
+            "95% Bootstrap CI: %{customdata[2]}<br>"
             "Pass Plays: %{customdata[3]} | Run Plays: %{customdata[4]}"
             "<extra></extra>"
         )
@@ -198,33 +182,47 @@ def build_decile_gap_chart(
                 y=y_vals,
                 mode="lines+markers",
                 name=series_label,
-                line=dict(color=color, width=2.5),
-                marker=dict(size=8, color=color),
+                line=dict(color=color, width=2.5, dash=line_dash),
+                marker=dict(size=8, color=color, symbol=marker_symbol),
+                error_y=dict(
+                    type="data",
+                    symmetric=False,
+                    array=errors_above,
+                    arrayminus=errors_below,
+                    thickness=1.5,
+                    width=4,
+                    color=color,
+                ),
                 customdata=customdata,
                 hovertemplate=hovertemplate,
             )
         )
 
-    # Dashed zero reference line
+    # Dashed zero reference line labeled "no gap"
     fig.add_hline(
         y=0.0,
         line_dash="dash",
         line_color="rgba(138, 143, 152, 0.7)",
         line_width=1.5,
+        annotation_text="no gap",
+        annotation_position="bottom right",
+        annotation_font=dict(size=11, color="rgba(138, 143, 152, 0.9)"),
     )
 
     # Layout configuration
     fig.update_layout(
-        title="Pass − Run EPA Gap by Predicted Pass Probability Decile",
         xaxis=dict(
-            title="Decile of Predicted Pass Probability (p̂)",
+            title=(
+                "Least predictable → most predictable "
+                "(decile of predicted pass probability)"
+            ),
             tickmode="linear",
             tick0=1,
             dtick=1,
             range=[0.5, 10.5],
         ),
         yaxis=dict(
-            title="Pass − Run EPA Gap (EPA/play)",
+            title="Pass minus run EPA gap (EPA per play)",
             zeroline=False,
         ),
         legend=dict(
@@ -235,7 +233,7 @@ def build_decile_gap_chart(
             x=0.5,
         ),
         hovermode="closest",
-        margin=dict(l=10, r=20, t=50, b=80),
+        margin=dict(l=10, r=20, t=20, b=80),
         height=450,
     )
 
@@ -373,32 +371,32 @@ def build_placebo_histogram(
     fig.add_vline(
         x=median_val,
         line_dash="dash",
-        line_color="#E69F00",  # Orange accent
+        line_color=SERIES_COLORS.get("tune", "#E69F00"),  # Okabe-Ito Tune Orange
         line_width=2.0,
         annotation_text=f"Null Median: {format_epa(median_val)}",
         annotation_position="top left",
-        annotation_font=dict(size=12, color="#E69F00"),
+        annotation_font=dict(size=12, color=SERIES_COLORS.get("tune", "#E69F00")),
     )
 
     # 5. Observed delta vertical line
     fig.add_vline(
         x=observed_delta,
         line_dash="solid",
-        line_color="#0072B2",  # Okabe-Ito Blue
+        line_color=SERIES_COLORS.get("holdout", "#0072B2"),  # Okabe-Ito Holdout Blue
         line_width=2.5,
         annotation_text=f"Observed Δ: {format_epa(observed_delta)}",
-        annotation_position="top right",
-        annotation_font=dict(size=12, color="#0072B2"),
+        annotation_position="bottom right",
+        annotation_font=dict(size=12, color=SERIES_COLORS.get("holdout", "#0072B2")),
     )
 
     fig.update_layout(
         title=f"Placebo Distribution: Permuted Situation vs. Call ({split_name})",
         xaxis=dict(
-            title="Estimated Delta (EPA / play)",
+            title="Estimated Delta (EPA per play)",
             zeroline=False,
         ),
         yaxis=dict(
-            title="Replication Count",
+            title="Permutation Replications",
         ),
         legend=dict(
             orientation="h",

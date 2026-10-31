@@ -87,8 +87,8 @@ def test_chart_builds_from_fixtures():
 
     # Check dropped deciles (holdout decile 10 has n_run=110 < 200)
     assert any(d["split"] == "holdout" and d["decile"] == 10 for d in dropped)
-    # Figure has traces for early band, early line, holdout band, holdout line
-    assert len(fig.data) == 4
+    # Figure has traces for early line and holdout line (error bars directly on lines)
+    assert len(fig.data) == 2
 
     # With tune
     fig_tune, dropped_tune = build_decile_gap_chart(
@@ -100,7 +100,7 @@ def test_chart_builds_from_fixtures():
     )
     # Tune decile 10 has n_run=161 < 200
     assert any(d["split"] == "tune" and d["decile"] == 10 for d in dropped_tune)
-    assert len(fig_tune.data) == 6
+    assert len(fig_tune.data) == 3
 
 
 # ---------------------------------------------------------------------------

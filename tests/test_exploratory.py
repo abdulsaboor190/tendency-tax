@@ -33,10 +33,22 @@ def _make_st_mock():
     exp.__exit__ = MagicMock(return_value=False)
     m.expander.return_value = exp
 
-    col = MagicMock()
-    col.__enter__ = MagicMock(return_value=col)
-    col.__exit__ = MagicMock(return_value=False)
-    m.columns.return_value = (col, col, col)
+    def _fake_columns(n_or_spec, *args, **kwargs):
+        count = n_or_spec if isinstance(n_or_spec, int) else len(n_or_spec)
+        cols = []
+        for _ in range(count):
+            c = MagicMock()
+            c.__enter__ = MagicMock(return_value=c)
+            c.__exit__ = MagicMock(return_value=False)
+            cols.append(c)
+        return cols
+
+    m.columns.side_effect = _fake_columns
+
+    tab = MagicMock()
+    tab.__enter__ = MagicMock(return_value=tab)
+    tab.__exit__ = MagicMock(return_value=False)
+    m.tabs.return_value = (tab, tab, tab, tab)
 
     return m
 

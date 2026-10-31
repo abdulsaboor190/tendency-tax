@@ -459,7 +459,7 @@ def render() -> None:
                 )
                 col_chip, col_note = st.columns([1, 4])
                 with col_chip:
-                    verdict_chip("cant_tell")
+                    st.markdown(verdict_chip("cant_tell"), unsafe_allow_html=True)
                 with col_note:
                     st.caption(
                         "Because this team-season has fewer than 60 breaking "

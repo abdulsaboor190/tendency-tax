@@ -4,6 +4,7 @@ Components take plain data (floats, strings, DataFrames), contain no analysis
 logic, and never recompute a verdict. All textual language is association-only.
 """
 
+import math
 from typing import Any
 
 import plotly.graph_objects as go
@@ -133,11 +134,30 @@ def metric_card(
         if sub_parts
         else ""
     )
+
+    # Estimate-outside-interval guard
+    outside_warning_html = ""
+    if interval is not None:
+        try:
+            # Parse numeric value if possible (strip leading +, spaces, etc.)
+            val_clean = value.replace("+", "").strip()
+            numeric_val = float(val_clean)
+            lo, hi = float(interval[0]), float(interval[1])
+            if numeric_val < lo or numeric_val > hi:
+                outside_warning_html = (
+                    ' <span title="The estimate lies outside its interval; '
+                    'see data notes." '
+                    'style="cursor: help; font-size: 14px;" role="img" '
+                    'aria-label="Warning: estimate outside interval">⚠️</span>'
+                )
+        except (ValueError, TypeError):
+            pass
+
     help_attr = f' title="{help_text}"' if help_text else ""
 
     card_html = (
         f'<div class="metric-card-box"{help_attr}>'
-        f'<div class="metric-card-label">{label}</div>'
+        f'<div class="metric-card-label">{label}{outside_warning_html}</div>'
         f'<div class="metric-card-value">{value}</div>'
         f"{sub_html}"
         f"</div>"
@@ -164,48 +184,91 @@ def interval_plot(
       - Uses registered 'tendency' Plotly template.
       - Dashed zero reference line.
       - Colors mapped to verdict state or series tokens.
-      - Hover shows label, estimate, interval, and n.
+      - Supports non-testable rows with hollow markers and custom labels.
+      - Dynamic symmetric x-axis range based on actual intervals present.
     """
     y_labels = [r.get(label_col, f"Row {i}") for i, r in enumerate(rows)]
-    estimates = [r.get(estimate_col, 0.0) for r in rows]
-    ci_los = [r.get(ci_lo_col, 0.0) for r in rows]
-    ci_his = [r.get(ci_hi_col, 0.0) for r in rows]
+    estimates = [r.get(estimate_col, None) for r in rows]
+    ci_los = [r.get(ci_lo_col, None) for r in rows]
+    ci_his = [r.get(ci_hi_col, None) for r in rows]
     n_vals = [r.get(n_col, None) for r in rows]
     states = [r.get(state_col, "cant_tell") for r in rows]
+    custom_markers = [r.get("marker_symbol", "circle") for r in rows]
+    custom_line_colors = [r.get("marker_line_color", None) for r in rows]
+    custom_line_widths = [r.get("marker_line_width", 0) for r in rows]
 
-    errors_plus = [
-        hi - est if hi is not None and est is not None else 0.0
-        for est, hi in zip(estimates, ci_his, strict=False)
-    ]
-    errors_minus = [
-        est - lo if lo is not None and est is not None else 0.0
-        for est, lo in zip(estimates, ci_los, strict=False)
-    ]
+    x_scatter: list[float] = []
+    errors_plus: list[float] = []
+    errors_minus: list[float] = []
+    colors: list[str] = []
+    marker_symbols: list[str] = []
+    marker_line_colors: list[str] = []
+    marker_line_widths: list[int] = []
+    customdata: list[list[str]] = []
 
-    colors = []
-    for s in states:
+    valid_bounds: list[float] = []
+
+    for i, r in enumerate(rows):
+        est = estimates[i]
+        lo = ci_los[i]
+        hi = ci_his[i]
+        n = n_vals[i]
+        s = states[i]
+        sym = custom_markers[i]
+        l_col = custom_line_colors[i]
+        l_w = custom_line_widths[i]
+
         if s in VERDICT_TOKENS:
-            colors.append(VERDICT_TOKENS[s].color)
+            col = VERDICT_TOKENS[s].color
         elif s in SERIES_COLORS:
-            colors.append(SERIES_COLORS[s])
+            col = SERIES_COLORS[s]
         else:
-            colors.append(VERDICT_TOKENS["cant_tell"].color)
+            col = VERDICT_TOKENS["cant_tell"].color
 
-    customdata = []
-    for lo, hi, n in zip(ci_los, ci_his, n_vals, strict=False):
-        n_str = f"N = {format_int(n)}" if n is not None else ""
-        ci_str = format_ci(lo, hi)
-        customdata.append([ci_str, n_str])
+        if est is not None and not math.isnan(est):
+            x_scatter.append(float(est))
+            valid_bounds.append(float(est))
+            e_plus = hi - est if (hi is not None and not math.isnan(hi)) else 0.0
+            e_minus = est - lo if (lo is not None and not math.isnan(lo)) else 0.0
+            if hi is not None and not math.isnan(hi):
+                valid_bounds.append(float(hi))
+            if lo is not None and not math.isnan(lo):
+                valid_bounds.append(float(lo))
+
+            errors_plus.append(max(0.0, e_plus))
+            errors_minus.append(max(0.0, e_minus))
+            colors.append(col)
+            marker_symbols.append(sym)
+            marker_line_colors.append(l_col or col)
+            marker_line_widths.append(l_w)
+
+            n_str = f"N = {format_int(n)}" if n is not None else ""
+            ci_str = format_ci(lo, hi)
+            customdata.append([f"{est:.3f}", ci_str, n_str])
+        else:
+            # Non-testable row: hollow marker at 0.0 with specific label
+            x_scatter.append(0.0)
+            errors_plus.append(0.0)
+            errors_minus.append(0.0)
+            colors.append("rgba(0,0,0,0)")  # Hollow fill
+            marker_symbols.append("circle")
+            marker_line_colors.append("#8A8F98")
+            marker_line_widths.append(2)
+            n_str = f"n={n}" if n is not None else "n=0"
+            custom_note = r.get("custom_text", f"not testable ({n_str})")
+            customdata.append(["—", custom_note, ""])
 
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=estimates,
+            x=x_scatter,
             y=y_labels,
             mode="markers",
             marker=dict(
                 size=11,
                 color=colors,
+                symbol=marker_symbols,
+                line=dict(color=marker_line_colors, width=marker_line_widths),
             ),
             error_x=dict(
                 type="data",
@@ -219,9 +282,9 @@ def interval_plot(
             customdata=customdata,
             hovertemplate=(
                 "<b>%{y}</b><br/>"
-                "Estimate: %{x:.3f}<br/>"
-                "95% CI: %{customdata[0]}<br/>"
-                "%{customdata[1]}"
+                "Estimate: %{customdata[0]}<br/>"
+                "%{customdata[1]}<br/>"
+                "%{customdata[2]}"
                 "<extra></extra>"
             ),
         )
@@ -230,10 +293,17 @@ def interval_plot(
     if zero_line:
         fig.add_vline(x=0.0, line_dash="dash", line_color="rgba(138, 143, 152, 0.7)")
 
+    # Symmetric x-axis range based on actual intervals present
+    xaxis_kwargs: dict[str, Any] = {"title": xaxis_title}
+    if valid_bounds:
+        max_abs = max(abs(b) for b in valid_bounds)
+        pad = max(0.04, max_abs * 0.15)
+        xaxis_kwargs["range"] = [-(max_abs + pad), max_abs + pad]
+
     calculated_height = height or max(260, len(rows) * 38 + 90)
     fig.update_layout(
         title=title,
-        xaxis_title=xaxis_title,
+        xaxis=xaxis_kwargs,
         yaxis=dict(autorange="reversed"),
         height=calculated_height,
         margin=dict(l=10, r=20, t=40, b=40),
