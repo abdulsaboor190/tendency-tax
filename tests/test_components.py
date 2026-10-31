@@ -125,7 +125,7 @@ def test_components_render_without_error(monkeypatch):
 
 
 def test_metric_card_outside_interval_guard(monkeypatch):
-    """metric_card displays warning icon and tooltip when estimate is outside interval."""
+    """metric_card displays warning icon when estimate is outside interval."""
     calls = []
     import streamlit as st
     monkeypatch.setattr(st, "markdown", lambda html, **kw: calls.append(html))

@@ -305,7 +305,8 @@ def test_all_27_cells_render_on_real_results():
                         ) as mock_empty,
                     ):
                         render()
-                        # If empty_state was called, it must be the expected all-untestable cross-split fallback
+                        # If empty_state was called, it must be the expected
+                        # all-untestable cross-split fallback
                         for empty_call in mock_empty.call_args_list:
                             msg = empty_call[0][0] if empty_call[0] else ""
                             assert "All splits for this cell" in msg
@@ -405,7 +406,7 @@ def test_no_bare_point_estimate_for_cant_tell():
 
         render()
 
-    # Verify the primary delta metric_card was called with interval string as value, not bare_point
+    # Verify primary delta metric_card was called with interval string as value
     displayed_values = [
         c.kwargs.get("value") for c in mock_metric_card.call_args_list
     ]
