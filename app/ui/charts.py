@@ -185,8 +185,8 @@ def build_decile_gap_chart(
         # 2. Main point-and-line trace
         hovertemplate = (
             f"<b>{series_label}</b><br>"
-            "Decile %{x} (p&#770; range: %{customdata[0]})<br>"
-            "Pass &minus; Run EPA Gap: <b>%{customdata[1]}</b><br>"
+            "Decile %{x} (p̂ range: %{customdata[0]})<br>"
+            "Pass − Run EPA Gap: <b>%{customdata[1]}</b><br>"
             "95% Bootstrap Band: %{customdata[2]}<br>"
             "Pass Plays: %{customdata[3]} | Run Plays: %{customdata[4]}"
             "<extra></extra>"
@@ -215,16 +215,16 @@ def build_decile_gap_chart(
 
     # Layout configuration
     fig.update_layout(
-        title="Pass &minus; Run EPA Gap by Predicted Pass Probability Decile",
+        title="Pass − Run EPA Gap by Predicted Pass Probability Decile",
         xaxis=dict(
-            title="Decile of Predicted Pass Probability (p&#770;)",
+            title="Decile of Predicted Pass Probability (p̂)",
             tickmode="linear",
             tick0=1,
             dtick=1,
             range=[0.5, 10.5],
         ),
         yaxis=dict(
-            title="Pass &minus; Run EPA Gap (EPA/play)",
+            title="Pass − Run EPA Gap (EPA/play)",
             zeroline=False,
         ),
         legend=dict(

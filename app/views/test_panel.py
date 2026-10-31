@@ -122,20 +122,33 @@ def render() -> None:
     # 1. Verdict banner (uses STORED sentence — never recomputed here)
     # ------------------------------------------------------------------
     ds_state = map_verdict_state(v.state, v.direction)
-    verdict_banner(v.sentence, ds_state)
+    headline_label = (
+        "Inconclusive"
+        if ds_state == "cant_tell"
+        else ("Surprise Premium" if ds_state == "premium" else "Surprise Reverse")
+    )
+    ci_lo, ci_hi = sb.delta_ci_95[0], sb.delta_ci_95[1]
+    banner_headline = (
+        f"{headline_label} · {format_epa(sb.delta)} EPA per play "
+        f"[{format_epa(ci_lo)}, {format_epa(ci_hi)}]"
+    )
+    banner_note = (
+        "Inconclusive is not evidence of no effect. It means the held-out "
+        "evidence did not satisfy all three pre-declared decision rules."
+        if ds_state == "cant_tell"
+        else None
+    )
 
-    if ds_state == "cant_tell":
-        caveat_callout(
-            "An inconclusive result is not evidence of no effect. It means the "
-            "held-out evidence did not satisfy all three pre-declared decision "
-            "rules.",
-            kind="info",
-        )
+    verdict_banner(
+        v.sentence,
+        ds_state,
+        headline=banner_headline,
+        note=banner_note,
+    )
 
     # ------------------------------------------------------------------
     # 2. Plain-language line from the numbers (association-only)
     # ------------------------------------------------------------------
-    ci_lo, ci_hi = sb.delta_ci_95[0], sb.delta_ci_95[1]
     ci_includes_zero = ci_lo < 0 < ci_hi
     ci_clause = (
         "the interval includes zero"

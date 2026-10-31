@@ -20,34 +20,49 @@ if "app" in sys.modules and not hasattr(sys.modules["app"], "__path__"):
 import streamlit as st  # noqa: E402
 
 st.set_page_config(
-    page_title="Tendency Tax Explorer",
+    page_title="Tendency Tax",
     page_icon="🏈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Navigation definition with st.Page and st.navigation
+# Sidebar brand header and attribution
+st.sidebar.markdown(
+    """
+    <div style="margin-bottom: 1.25rem;">
+        <h2 style="margin: 0; font-size: 1.25rem; font-weight: 700;">Tendency Tax</h2>
+        <p style="margin: 0.2rem 0 0 0; font-size: 0.82rem; "
+           "color: var(--color-text-muted); line-height: 1.35;">
+            Does being predictable cost an NFL offense? A pre-declared test on "
+            "held-out 2024–2025 seasons.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Navigation definition with st.Page and st.navigation using Material icons
 pages = [
     st.Page(
         "views/test_panel.py",
         title="Test Panel",
-        icon="⚖️",
+        icon=":material/gavel:",
         default=True,
     ),
     st.Page(
         "views/situation_explorer.py",
         title="Situation Explorer",
-        icon="🗺️",
+        icon=":material/grid_view:",
     ),
     st.Page(
         "views/team_scout.py",
         title="Team Scout",
-        icon="🎯",
+        icon=":material/groups:",
     ),
     st.Page(
         "views/about_method.py",
         title="About the Method",
-        icon="📖",
+        icon=":material/menu_book:",
     ),
 ]
 
@@ -57,9 +72,22 @@ if os.environ.get("TENDENCY_DEV") == "1":
         st.Page(
             "views/style_guide.py",
             title="Design System & Style Guide",
-            icon="🎨",
+            icon=":material/palette:",
         )
     )
 
 nav = st.navigation(pages)
 nav.run()
+
+# Sidebar footer attribution
+st.sidebar.markdown(
+    """
+    <div style="margin-top: 2rem; padding-top: 1rem; "
+         "border-top: 1px solid var(--color-border); font-size: 0.75rem; "
+         "color: var(--color-text-muted); line-height: 1.35;">
+        Play-by-play data: <strong>nflverse</strong> (CC BY 4.0).<br>
+        EPA, win probability &amp; xpass are nflfastR model outputs.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)

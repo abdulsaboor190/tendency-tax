@@ -5,10 +5,10 @@ import streamlit as st
 from app.data import LoadResult
 from app.ui.theme import inject_css
 
-APP_TITLE = "Tendency Tax: Situational Predictability in NFL Play-Calling"
+APP_TITLE = "Tendency Tax"
 APP_SUBTITLE = (
-    "Evaluating the empirical association between predictable situational play "
-    "selection and drive efficiency across NFL seasons (2016–2025)."
+    "Does being predictable cost an NFL offense? "
+    "A pre-declared test on held-out 2024–2025 seasons."
 )
 FOOTER_ATTRIBUTION = (
     "Play-by-play data: nflverse (CC BY 4.0). EPA, win probability and xpass "
@@ -17,17 +17,8 @@ FOOTER_ATTRIBUTION = (
 
 
 def render_page_header(load_result: LoadResult) -> None:
-    """Render the standard project header, design system CSS, and fixture banner."""
+    """Render the standard design system CSS and fixture banner."""
     inject_css()
-
-    st.markdown(
-        f"<div style='margin-bottom: 8px;'>"
-        f"<h2 style='margin-bottom: 2px;'>🏈 {APP_TITLE}</h2>"
-        f"<p style='color: var(--color-text-muted); font-size: 14px; margin-top: 0;'>"
-        f"{APP_SUBTITLE}</p>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
 
     if load_result.is_fixtures:
         st.warning(

@@ -243,3 +243,17 @@ class TestPlaceboShiftWarning:
         assert fig is not None
         assert stats["is_shifted"] is True
 
+
+# ---------------------------------------------------------------------------
+# 6. Absence of raw HTML entities in chart text
+# ---------------------------------------------------------------------------
+
+def test_no_raw_html_entities_in_chart_code():
+    """Verify no literal HTML entities (&minus;, &ndash;, etc.) appear in charts.py."""
+    chart_py = Path("app/ui/charts.py").read_text(encoding="utf-8")
+    # Matches patterns like &minus;, &ndash;, &#770;, etc.
+    entity_pattern = re.compile(r"&[a-zA-Z0-9#]+;")
+    matches = entity_pattern.findall(chart_py)
+    assert not matches, f"Raw HTML entities found in app/ui/charts.py: {matches}"
+
+
